@@ -1,8 +1,7 @@
-import pytest
 from train_model import discretize_return
 
 
-class TestDiscreetizeReturn:
+class TestDiscretizeReturn:
     def test_strong_up(self):
         assert discretize_return(0.06) == 2
 
