@@ -37,3 +37,9 @@ def discretize_return(r: float) -> int:
         return -1
     else:
         return -2
+
+
+def load_tickers(csv_path: str) -> list:
+    """Return all Equity ticker symbols from the HKEX CSV."""
+    df = pd.read_csv(csv_path)
+    return df[df['Category'] == 'Equity']['Tickers'].tolist()
