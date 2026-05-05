@@ -64,3 +64,33 @@ def build_ticker_dataset(ticker: str, period: str = '5y') -> Optional[pd.DataFra
     if len(df) < 252:
         return None
     return df
+
+
+def build_full_dataset(csv_path: str) -> Tuple[Tuple, Tuple]:
+    """Fetch all HKEX equity tickers, combine, and time-split 80/20.
+
+    Returns:
+        ((X_train, y_train), (X_test, y_test))
+    """
+    tickers = load_tickers(csv_path)
+    frames = []
+    skipped = 0
+    for i, ticker in enumerate(tickers):
+        if i % 100 == 0:
+            print(f"  [{i}/{len(tickers)}] Processing tickers...", flush=True)
+        df = build_ticker_dataset(ticker)
+        if df is not None:
+            frames.append(df)
+        else:
+            skipped += 1
+
+    print(f"\nUsed {len(frames)} tickers, skipped {skipped}")
+    combined = pd.concat(frames).sort_index()
+
+    print("\nClass distribution (full dataset):")
+    print(combined['target'].value_counts().sort_index().to_string())
+
+    X = combined[FEATURE_NAMES]
+    y = combined['target']
+    split = int(len(combined) * 0.8)
+    return (X.iloc[:split], y.iloc[:split]), (X.iloc[split:], y.iloc[split:])

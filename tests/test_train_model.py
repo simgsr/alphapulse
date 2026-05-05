@@ -138,3 +138,80 @@ class TestBuildTickerDataset:
             result = build_ticker_dataset("0001.hk")
         assert result["forward_return"].max() <= 0.30
         assert result["forward_return"].min() >= -0.30
+
+
+class TestBuildFullDataset:
+    def _make_labeled_df(self, n_rows: int, start: str) -> pd.DataFrame:
+        """Minimal labeled DataFrame as returned by build_ticker_dataset."""
+        idx = pd.date_range(start, periods=n_rows, freq="B")
+        data = {f: np.ones(n_rows) for f in [
+            'SMA_5_ratio', 'SMA_20_ratio', 'RSI_14',
+            'Volatility_20', 'Returns_1d', 'Returns_5d'
+        ]}
+        data['Adj_Close'] = np.ones(n_rows) * 100.0
+        data['forward_return'] = np.zeros(n_rows)
+        data['target'] = 0
+        return pd.DataFrame(data, index=idx)
+
+    def test_80_20_split_sizes(self, tmp_path):
+        csv_content = (
+            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
+            "0001.hk,00001,TICKER A,Equity,500,HK0001,\n"
+            "0002.hk,00002,TICKER B,Equity,500,HK0002,\n"
+        )
+        csv_file = tmp_path / "hkex.csv"
+        csv_file.write_text(csv_content)
+
+        df_a = self._make_labeled_df(300, "2020-01-01")
+        df_b = self._make_labeled_df(300, "2020-01-01")
+
+        def mock_build(ticker, period='5y'):
+            return df_a if ticker == '0001.hk' else df_b
+
+        with patch("train_model.build_ticker_dataset", side_effect=mock_build):
+            from train_model import build_full_dataset
+            (X_train, y_train), (X_test, y_test) = build_full_dataset(str(csv_file))
+
+        total = len(X_train) + len(X_test)
+        assert abs(len(X_train) / total - 0.8) < 0.01
+
+    def test_features_subset_only(self, tmp_path):
+        csv_content = (
+            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
+            "0001.hk,00001,TICKER A,Equity,500,HK0001,\n"
+        )
+        csv_file = tmp_path / "hkex.csv"
+        csv_file.write_text(csv_content)
+
+        df_a = self._make_labeled_df(300, "2020-01-01")
+
+        with patch("train_model.build_ticker_dataset", return_value=df_a):
+            from train_model import build_full_dataset
+            (X_train, y_train), (X_test, y_test) = build_full_dataset(str(csv_file))
+
+        expected_features = [
+            'SMA_5_ratio', 'SMA_20_ratio', 'RSI_14',
+            'Volatility_20', 'Returns_1d', 'Returns_5d'
+        ]
+        assert list(X_train.columns) == expected_features
+        assert list(X_test.columns) == expected_features
+
+    def test_skips_none_tickers(self, tmp_path):
+        csv_content = (
+            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
+            "0001.hk,00001,TICKER A,Equity,500,HK0001,\n"
+            "0002.hk,00002,TICKER BAD,Equity,500,HK0002,\n"
+        )
+        csv_file = tmp_path / "hkex.csv"
+        csv_file.write_text(csv_content)
+
+        df_a = self._make_labeled_df(300, "2020-01-01")
+
+        def mock_build(ticker, period='5y'):
+            return df_a if ticker == '0001.hk' else None
+
+        with patch("train_model.build_ticker_dataset", side_effect=mock_build):
+            from train_model import build_full_dataset
+            (X_train, y_train), _ = build_full_dataset(str(csv_file))
+
+        assert len(X_train) > 0
