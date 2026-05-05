@@ -109,13 +109,13 @@ def build_pipeline() -> Pipeline:
         ('scaler', RobustScaler()),
         ('clf', CalibratedClassifierCV(
             RandomForestClassifier(
-                n_estimators=300,
+                n_estimators=100,
                 class_weight='balanced',
-                n_jobs=-1,
+                n_jobs=2,
                 random_state=42,
             ),
             method='isotonic',
-            cv=TimeSeriesSplit(n_splits=5),
+            cv=TimeSeriesSplit(n_splits=3),
         ))
     ])
 

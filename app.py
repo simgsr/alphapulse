@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse
 import joblib
 import os
 import time
+import urllib.request
 import numpy as np
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 
@@ -41,9 +42,16 @@ WATCHLIST = [
 _scan_cache: dict = {"data": None, "ts": 0.0}
 SCAN_TTL = 3600  # seconds
 
-MODEL_PATH = 'stock_model.joblib'
+_here = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(_here, 'stock_model.joblib')
+
+# Download model artifact if absent (Render / Docker deployments set MODEL_URL)
 if not os.path.exists(MODEL_PATH):
-    MODEL_PATH = os.path.join(os.path.dirname(__file__), 'stock_model.joblib')
+    _model_url = os.environ.get('MODEL_URL')
+    if _model_url:
+        print(f"Downloading model from MODEL_URL…", flush=True)
+        urllib.request.urlretrieve(_model_url, MODEL_PATH)
+        print("Model download complete.", flush=True)
 
 try:
     model_data = joblib.load(MODEL_PATH)
