@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import joblib
 import os
+import time
 import numpy as np
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 
@@ -23,6 +24,22 @@ SIGNAL_MAP = {
     -1: "DOWN 3-5%",
     -2: "DOWN > 5%",
 }
+
+# HSI constituent tickers used for the /scan screener
+WATCHLIST = [
+    "0001.HK", "0002.HK", "0003.HK", "0005.HK", "0011.HK",
+    "0012.HK", "0016.HK", "0027.HK", "0066.HK", "0175.HK",
+    "0267.HK", "0288.HK", "0291.HK", "0388.HK", "0669.HK",
+    "0700.HK", "0762.HK", "0823.HK", "0857.HK", "0883.HK",
+    "0939.HK", "0941.HK", "0960.HK", "0992.HK", "1038.HK",
+    "1093.HK", "1109.HK", "1177.HK", "1211.HK", "1299.HK",
+    "1398.HK", "1876.HK", "1928.HK", "2020.HK", "2269.HK",
+    "2318.HK", "2382.HK", "2388.HK", "2628.HK", "3690.HK",
+    "9618.HK", "9988.HK", "9999.HK",
+]
+
+_scan_cache: dict = {"data": None, "ts": 0.0}
+SCAN_TTL = 3600  # seconds
 
 MODEL_PATH = 'stock_model.joblib'
 if not os.path.exists(MODEL_PATH):
@@ -48,16 +65,25 @@ def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_
     confidence_up_3pct = round(prob_dict.get('1', 0.0) + prob_dict.get('2', 0.0), 4)
     confidence_up_5pct = round(prob_dict.get('2', 0.0), 4)
 
+    p_down = prob_dict.get('-1', 0.0) + prob_dict.get('-2', 0.0)
+    edge_ratio = round(confidence_up_3pct / p_down, 2) if p_down > 0 else 99.0
+
     return {
         "ticker": ticker,
         "prediction": prediction,
         "signal": SIGNAL_MAP.get(prediction, "UNKNOWN"),
         "confidence_up_3pct": confidence_up_3pct,
         "confidence_up_5pct": confidence_up_5pct,
+        "edge_ratio": edge_ratio,
         "probabilities": prob_dict,
         "current_price": float(raw_data['Adj_Close'].iloc[-1]),
         "last_updated": str(raw_data.index[-1].date()),
     }
+
+
+def rank_scan_results(results: list, n: int = 5) -> list:
+    """Return top-n results sorted by edge_ratio descending."""
+    return sorted(results, key=lambda r: r["edge_ratio"], reverse=True)[:n]
 
 
 @app.get("/predict/{ticker}")
@@ -76,6 +102,34 @@ async def predict(ticker: str):
 
     latest_features = processed[feature_names].iloc[-1:].values
     return build_prediction_response(ticker, model, latest_features, data)
+
+
+@app.get("/scan")
+async def scan():
+    global _scan_cache
+    if _scan_cache["data"] is not None and (time.time() - _scan_cache["ts"]) < SCAN_TTL:
+        return _scan_cache["data"]
+
+    if model is None:
+        raise HTTPException(status_code=500, detail="Model not loaded on server")
+
+    results = []
+    for ticker in WATCHLIST:
+        try:
+            data = fetch_latest_data(ticker)
+            if data is None:
+                continue
+            processed = calculate_technical_indicators(data)
+            if processed.empty:
+                continue
+            latest_features = processed[feature_names].iloc[-1:].values
+            results.append(build_prediction_response(ticker, model, latest_features, data))
+        except Exception:
+            continue
+
+    top5 = rank_scan_results(results, n=5)
+    _scan_cache = {"data": top5, "ts": time.time()}
+    return top5
 
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

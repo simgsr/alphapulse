@@ -52,7 +52,10 @@
                     <h2 id="tickerDisplay" class="result__ticker">---</h2>
                     <p id="priceDisplay" class="result__price">$0.00</p>
                 </div>
-                <div id="signalBadge" class="badge">---</div>
+                <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+                    <div id="signalBadge" class="badge">---</div>
+                    <div id="edgeDisplay" class="edge-display">Edge: —</div>
+                </div>
             </div>
 
             <div class="confidence-stack">
@@ -86,9 +89,21 @@
 
             <p id="lastUpdated" class="result__updated">Updated: —</p>
 
-            <p class="disclaimer">Not financial advice. Based on historical patterns only.</p>
-
         </section>
+
+        <section id="scanSection" class="scan-section hidden">
+            <div class="scan-header">
+                <span class="scan-title">Top Picks</span>
+                <button id="scanBtn" class="scan-btn">Scan HSI</button>
+            </div>
+            <div id="scanLoader" class="scan-loader hidden">
+                <div class="spinner"></div>
+                <p class="loader__text">Scanning 43 stocks…</p>
+            </div>
+            <div id="scanResults" class="scan-results"></div>
+        </section>
+
+        <p class="disclaimer">Not financial advice. Based on historical patterns only.</p>
 
     </div>
     <script src="script.js"></script>
