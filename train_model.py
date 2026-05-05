@@ -94,3 +94,71 @@ def build_full_dataset(csv_path: str) -> Tuple[Tuple, Tuple]:
     y = combined['target']
     split = int(len(combined) * 0.8)
     return (X.iloc[:split], y.iloc[:split]), (X.iloc[split:], y.iloc[split:])
+
+
+def build_pipeline() -> Pipeline:
+    """Build the unfitted sklearn Pipeline.
+
+    RobustScaler is resistant to HK small-cap outliers.
+    CalibratedClassifierCV with isotonic regression corrects RandomForest's
+    tendency to produce overconfident probability estimates.
+    TimeSeriesSplit ensures the calibration CV folds respect temporal order.
+    class_weight='balanced' compensates for the dominant STABLE class.
+    """
+    return Pipeline([
+        ('scaler', RobustScaler()),
+        ('clf', CalibratedClassifierCV(
+            RandomForestClassifier(
+                n_estimators=300,
+                class_weight='balanced',
+                n_jobs=-1,
+                random_state=42,
+            ),
+            method='isotonic',
+            cv=TimeSeriesSplit(n_splits=5),
+        ))
+    ])
+
+
+def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> None:
+    """Full training run: load data, fit pipeline, evaluate, save model."""
+    print("=== AlphaPulse Model Training ===")
+    print(f"Ticker source : {csv_path}")
+    print(f"Output path   : {output_path}\n")
+
+    (X_train, y_train), (X_test, y_test) = build_full_dataset(csv_path)
+
+    print(f"\nTraining rows : {len(X_train):,}")
+    print(f"Test rows     : {len(X_test):,}")
+    print("\nClass distribution (train set):")
+    print(y_train.value_counts().sort_index().to_string())
+
+    pipeline = build_pipeline()
+    print("\nFitting pipeline — this may take 30–60 minutes...")
+    pipeline.fit(X_train, y_train)
+    print("Fitting complete.")
+
+    y_pred = pipeline.predict(X_test)
+    y_proba = pipeline.predict_proba(X_test)
+
+    print("\n=== Held-out Test Set Evaluation ===")
+    label_names = ["DOWN>5%", "DOWN 3-5%", "STABLE", "UP 3-5%", "UP>5%"]
+    print(classification_report(y_test, y_pred, target_names=label_names))
+    print(f"Log-loss: {log_loss(y_test, y_proba):.4f}")
+
+    model_data = {
+        'model': pipeline,
+        'features': FEATURE_NAMES,
+        'description': (
+            '5-class HKEX stock predictor. '
+            'Classes: -2=DOWN>5%, -1=DOWN3-5%, 0=STABLE, 1=UP3-5%, 2=UP>5%. '
+            'Horizon: 7 trading days.'
+        ),
+    }
+    joblib.dump(model_data, output_path)
+    print(f"\nModel saved to: {output_path}")
+
+
+if __name__ == '__main__':
+    _csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'hkex.csv')
+    train_and_save(_csv)
