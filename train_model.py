@@ -43,3 +43,24 @@ def load_tickers(csv_path: str) -> list:
     """Return all Equity ticker symbols from the HKEX CSV."""
     df = pd.read_csv(csv_path)
     return df[df['Category'] == 'Equity']['Tickers'].tolist()
+
+
+def build_ticker_dataset(ticker: str, period: str = '5y') -> Optional[pd.DataFrame]:
+    """Fetch, engineer features, and label one ticker.
+
+    Returns None if data is unavailable or fewer than 252 labeled rows remain.
+    The 7-day forward return is clipped to ±30% to filter data errors and
+    unadjusted corporate actions.
+    """
+    raw = fetch_latest_data(ticker, period=period)
+    if raw is None:
+        return None
+    df = calculate_technical_indicators(raw)
+    df = df.copy()
+    df['forward_return'] = df['Adj_Close'].shift(-7) / df['Adj_Close'] - 1
+    df = df.dropna(subset=['forward_return'])
+    df['forward_return'] = df['forward_return'].clip(-0.30, 0.30)
+    df['target'] = df['forward_return'].apply(discretize_return)
+    if len(df) < 252:
+        return None
+    return df
