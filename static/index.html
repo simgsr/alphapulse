@@ -2,66 +2,94 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AlphaPulse | Stock Prediction AI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>AlphaPulse | HK Stock AI</title>
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1 class="logo">Alpha<span>Pulse</span></h1>
-            <p class="tagline">Next-Gen Time Series AI Forecast</p>
+    <div class="app">
+
+        <header class="header">
+            <span class="header__logo">Alpha<span class="header__logo--accent">Pulse</span></span>
+            <span class="header__sub">HK Stock Forecast AI</span>
         </header>
 
-        <main>
-            <div class="input-card">
-                <div class="search-box">
-                    <input type="text" id="tickerInput" placeholder="Enter Ticker (e.g. GOOG, AAPL, 1398.HK)" autocomplete="off">
-                    <button id="predictBtn">Analyze</button>
+        <section class="search-section">
+            <div class="search-row">
+                <input
+                    type="text"
+                    id="tickerInput"
+                    class="search-input"
+                    placeholder="e.g. 0001.HK or AAPL"
+                    autocomplete="off"
+                    autocapitalize="characters"
+                >
+                <button id="predictBtn" class="search-btn" aria-label="Analyze">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2.5"
+                         stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <span>Analyze</span>
+                </button>
+            </div>
+            <div id="errorBanner" class="error-banner hidden">
+                <span id="errorText">An error occurred.</span>
+            </div>
+        </section>
+
+        <div id="loader" class="loader hidden">
+            <div class="spinner"></div>
+            <p class="loader__text">Analyzing market data…</p>
+        </div>
+
+        <section id="resultContainer" class="result hidden">
+
+            <div class="result__header">
+                <div class="result__ticker-block">
+                    <h2 id="tickerDisplay" class="result__ticker">---</h2>
+                    <p id="priceDisplay" class="result__price">$0.00</p>
+                </div>
+                <div id="signalBadge" class="badge">---</div>
+            </div>
+
+            <div class="confidence-stack">
+                <div class="confidence-card">
+                    <div class="confidence-card__header">
+                        <span class="confidence-card__label">Confidence price UP &gt;3% in 7 days</span>
+                        <span id="conf3Pct" class="confidence-card__value">0%</span>
+                    </div>
+                    <div class="confidence-bar">
+                        <div id="conf3Bar" class="confidence-bar__fill confidence-bar__fill--mild" style="width:0%"></div>
+                    </div>
+                </div>
+
+                <div class="confidence-card">
+                    <div class="confidence-card__header">
+                        <span class="confidence-card__label">Confidence price UP &gt;5% in 7 days</span>
+                        <span id="conf5Pct" class="confidence-card__value">0%</span>
+                    </div>
+                    <div class="confidence-bar">
+                        <div id="conf5Bar" class="confidence-bar__fill confidence-bar__fill--strong" style="width:0%"></div>
+                    </div>
                 </div>
             </div>
 
-            <div id="resultContainer" class="result-card hidden">
-                <div class="result-header">
-                    <div class="ticker-info">
-                        <h2 id="tickerDisplay">---</h2>
-                        <p id="priceDisplay">$0.00</p>
-                    </div>
-                    <div id="signalBadge" class="badge">---</div>
+            <div class="chart-section">
+                <div class="chart-wrap">
+                    <canvas id="probChart"></canvas>
                 </div>
-
-                <div class="prediction-details">
-                    <div class="prob-chart-container">
-                        <canvas id="probChart"></canvas>
-                    </div>
-                    <div class="stats">
-                        <div class="stat-item">
-                            <span class="label">Forecast Horizon</span>
-                            <span class="value">7 Days</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="label">Model Confidence</span>
-                            <span id="confidenceValue" class="value">0%</span>
-                        </div>
-                        <div class="stat-item">
-                            <span class="label">Threshold</span>
-                            <span class="value">±3.0%</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="disclaimer">
-                    * Predictions are based on historical patterns and are not financial advice.
-                </div>
+                <div class="chart-legend" id="chartLegend"></div>
             </div>
 
-            <div id="loader" class="loader hidden">
-                <div class="spinner"></div>
-                <p>Analyzing market dynamics...</p>
-            </div>
-        </main>
+            <p id="lastUpdated" class="result__updated">Updated: —</p>
+
+            <p class="disclaimer">Not financial advice. Based on historical patterns only.</p>
+
+        </section>
+
     </div>
     <script src="script.js"></script>
 </body>
