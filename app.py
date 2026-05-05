@@ -45,11 +45,25 @@ SCAN_TTL = 3600  # seconds
 _here = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(_here, 'stock_model.joblib')
 
-# Download model artifact if absent (Render / Docker deployments set MODEL_URL)
+# Fallback to /tmp for read-only filesystems (HF Spaces)
 if not os.path.exists(MODEL_PATH):
+    MODEL_PATH = '/tmp/stock_model.joblib'
+
+if not os.path.exists(MODEL_PATH):
+    _hf_repo = os.environ.get('HF_MODEL_REPO')
     _model_url = os.environ.get('MODEL_URL')
-    if _model_url:
-        print(f"Downloading model from MODEL_URL…", flush=True)
+    if _hf_repo:
+        from huggingface_hub import hf_hub_download
+        print(f"Downloading model from HF Hub: {_hf_repo}", flush=True)
+        MODEL_PATH = hf_hub_download(
+            repo_id=_hf_repo,
+            filename='stock_model.joblib',
+            cache_dir='/tmp/hf_cache',
+            token=os.environ.get('HF_TOKEN'),
+        )
+        print("Model download complete.", flush=True)
+    elif _model_url:
+        print("Downloading model from MODEL_URL…", flush=True)
         urllib.request.urlretrieve(_model_url, MODEL_PATH)
         print("Model download complete.", flush=True)
 

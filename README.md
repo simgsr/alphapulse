@@ -1,3 +1,13 @@
+---
+title: AlphaPulse HK Stock Forecast AI
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # AlphaPulse — HK Stock Forecast AI
 
 A full-stack machine learning web app that predicts 7-day price direction for HKEX stocks and surfaces the top asymmetric opportunities across HSI constituents.
@@ -55,14 +65,14 @@ FastAPI (app.py)
 ├── app.py                  # FastAPI routes + inference logic
 ├── get_price_data.py       # yfinance fetch + technical indicators
 ├── train_model.py          # Full training pipeline (run locally)
-├── stock_model.joblib      # Trained model — NOT in git (see Deployment)
+├── stock_model.joblib      # Trained model — NOT in git (hosted on HF Model Hub)
 ├── static/
 │   ├── index.html
 │   ├── style.css
 │   └── script.js
 ├── tests/
-│   ├── test_app.py         # 11 unit tests (build_prediction_response, rank_scan_results)
-│   └── test_train_model.py # 22 unit tests (discretize_return, build_ticker_dataset, …)
+│   ├── test_app.py         # 11 unit tests
+│   └── test_train_model.py # 22 unit tests
 ├── data/
 │   └── hkex.csv            # HKEX equity ticker list (used by train_model.py)
 ├── Dockerfile
@@ -76,17 +86,12 @@ FastAPI (app.py)
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Place stock_model.joblib in the project root, then:
+# Run training (30-60 min, requires network):
+python train_model.py
+
+# Start the app:
 uvicorn app:app --reload --port 7860
 # → http://localhost:7860
-```
-
-### Re-training the model
-
-Requires ~30-60 min and network access (yfinance). Produces `stock_model.joblib`.
-
-```bash
-python train_model.py
 ```
 
 ### Tests
@@ -95,46 +100,57 @@ python train_model.py
 pytest tests/ -v
 ```
 
-## Deployment on Render
+## Deployment on Hugging Face Spaces
 
-The trained model (`stock_model.joblib`, ~24 GB) is too large for a Git repository. Host it externally and let the container download it at startup.
+The trained model (`stock_model.joblib`) is hosted in a separate HF Model repository and downloaded automatically at container startup.
 
-### Step 1 — Host the model
-
-Upload `stock_model.joblib` to [Hugging Face Hub](https://huggingface.co/) (free, supports large files via LFS):
+### Step 1 — Upload the model to HF Model Hub
 
 ```bash
 pip install huggingface_hub
 huggingface-cli login
-huggingface-cli upload <your-username>/<repo-name> stock_model.joblib
+
+# Create a model repo at huggingface.co/new, then upload:
+huggingface-cli upload <your-username>/alphapulse-model stock_model.joblib
 ```
 
-The direct download URL will be:
-```
-https://huggingface.co/<your-username>/<repo-name>/resolve/main/stock_model.joblib
-```
+### Step 2 — Create the Space
 
-### Step 2 — Deploy on Render
+1. Go to [huggingface.co/new-space](https://huggingface.co/new-space)
+2. Choose **Docker** as the SDK
+3. Push this repository to the Space:
+   ```bash
+   git remote add space https://huggingface.co/spaces/<your-username>/alphapulse
+   git push space main
+   ```
 
-1. Push this repository to GitHub (the `.gitignore` already excludes the model).
-2. In Render, click **New → Web Service → Connect a Git repository**.
-3. Render auto-detects `render.yaml` and uses the Dockerfile.
-4. In **Environment Variables**, add:
-   - `MODEL_URL` = the Hugging Face direct download URL from Step 1
-5. Deploy. The container downloads the model on first startup (~10-15 min depending on bandwidth).
+### Step 3 — Set Space variables
 
-> **Note:** The free Render plan has limited RAM. A 24 GB model requires at least the **Standard** plan (2 GB RAM). Consider retraining with `n_estimators=50` to reduce model size for a free-tier demo.
+In the Space → **Settings → Variables and Secrets**, add:
+
+| Key | Value |
+|---|---|
+| `HF_MODEL_REPO` | `<your-username>/alphapulse-model` |
+| `HF_TOKEN` | Your HF token (only needed if the model repo is private) |
+
+The container downloads the model on first startup (~10-15 min for a large model).
+
+> **RAM requirement:** The current model (~24 GB on disk) requires at least **32 GB RAM**. Use a Space with a **CPU Upgrade (L)** or retrain with `n_estimators=30` and `max_depth=15` for a smaller model that runs on the free tier.
+
+## Deployment on Render
+
+See [`render.yaml`](render.yaml). Set the `MODEL_URL` environment variable to a direct download URL for `stock_model.joblib` (e.g., the HF Hub raw URL).
 
 ## Model Details
 
 | Property | Value |
 |---|---|
-| Algorithm | `RandomForestClassifier` wrapped in `CalibratedClassifierCV` |
+| Algorithm | `RandomForestClassifier` in `CalibratedClassifierCV` |
 | Calibration | Isotonic regression, `TimeSeriesSplit(n_splits=3)` |
 | Features | SMA_5_ratio, SMA_20_ratio, RSI_14, Volatility_20, Returns_1d, Returns_5d |
 | Training data | HKEX equity tickers, 5 years of daily OHLCV |
 | Train/test split | 80 / 20 time-based |
-| Class weights | `balanced` (compensates for dominant STABLE class) |
+| Class weights | `balanced` |
 | Prediction horizon | 7 trading days |
 
 ## Disclaimer
