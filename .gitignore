@@ -1,4 +1,3 @@
-stock_model.joblib
 __pycache__/
 *.pyc
 *.pyo
@@ -13,3 +12,4 @@ htmlcov/
 scratch/
 data/*.parquet
 data/*.feather
+data/*.csv
