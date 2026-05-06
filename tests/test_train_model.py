@@ -135,11 +135,7 @@ class TestBuildFullDataset:
         return pd.DataFrame(data, index=idx)
 
     def test_80_20_split_sizes(self, tmp_path):
-        csv_content = (
-            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
-            "0001.hk,00001,TICKER A,Equity,500,HK0001,\n"
-            "0002.hk,00002,TICKER B,Equity,500,HK0002,\n"
-        )
+        csv_content = "0001.hk\n0002.hk\n"
         csv_file = tmp_path / "hkex.csv"
         csv_file.write_text(csv_content)
 
@@ -157,10 +153,7 @@ class TestBuildFullDataset:
         assert abs(len(X_train) / total - 0.8) < 0.01
 
     def test_features_subset_only(self, tmp_path):
-        csv_content = (
-            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
-            "0001.hk,00001,TICKER A,Equity,500,HK0001,\n"
-        )
+        csv_content = "0001.hk\n"
         csv_file = tmp_path / "hkex.csv"
         csv_file.write_text(csv_content)
 
@@ -175,11 +168,7 @@ class TestBuildFullDataset:
         assert list(X_test.columns) == expected_features
 
     def test_skips_none_tickers(self, tmp_path):
-        csv_content = (
-            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
-            "0001.hk,00001,TICKER A,Equity,500,HK0001,\n"
-            "0002.hk,00002,TICKER BAD,Equity,500,HK0002,\n"
-        )
+        csv_content = "0001.hk\n0002.hk\n"
         csv_file = tmp_path / "hkex.csv"
         csv_file.write_text(csv_content)
 

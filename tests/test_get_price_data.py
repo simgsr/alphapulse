@@ -16,8 +16,14 @@ def _make_df(n=200):
 
 def test_new_columns_present():
     df = calculate_technical_indicators(_make_df())
-    for col in ['RSI_7', 'SMA_50_ratio', 'MACD', 'MACD_hist',
-                'BB_pct_b', 'Volume_ratio_20', 'Returns_10d', 'Returns_20d']:
+    for col in [
+        'SMA_5_ratio', 'SMA_20_ratio', 'SMA_50_ratio',
+        'RSI_14', 'RSI_7',
+        'MACD', 'MACD_hist',
+        'BB_pct_b',
+        'Volume_ratio_20',
+        'Volatility_20', 'Returns_1d', 'Returns_5d', 'Returns_10d', 'Returns_20d',
+    ]:
         assert col in df.columns, f"Missing column: {col}"
 
 
