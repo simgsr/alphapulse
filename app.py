@@ -19,11 +19,9 @@ app.add_middleware(
 )
 
 SIGNAL_MAP = {
-    2: "UP > 5%",
-    1: "UP 3-5%",
+    1: "UP > 3%",
     0: "STABLE",
-    -1: "DOWN 3-5%",
-    -2: "DOWN > 5%",
+    -1: "DOWN > 3%",
 }
 
 # HSI constituent tickers used for the /scan screener
@@ -84,10 +82,10 @@ def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_
     classes = mdl.classes_.tolist()
     prob_dict = {str(int(c)): round(p, 4) for c, p in zip(classes, probabilities)}
 
-    confidence_up_3pct = round(prob_dict.get('1', 0.0) + prob_dict.get('2', 0.0), 4)
-    confidence_up_5pct = round(prob_dict.get('2', 0.0), 4)
+    confidence_up_3pct = round(prob_dict.get('1', 0.0), 4)
+    confidence_down_3pct = round(prob_dict.get('-1', 0.0), 4)
 
-    p_down = prob_dict.get('-1', 0.0) + prob_dict.get('-2', 0.0)
+    p_down = confidence_down_3pct
     edge_ratio = round(confidence_up_3pct / p_down, 2) if p_down > 0 else 99.0
 
     return {
@@ -95,7 +93,7 @@ def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_
         "prediction": prediction,
         "signal": SIGNAL_MAP.get(prediction, "UNKNOWN"),
         "confidence_up_3pct": confidence_up_3pct,
-        "confidence_up_5pct": confidence_up_5pct,
+        "confidence_down_3pct": confidence_down_3pct,
         "edge_ratio": edge_ratio,
         "probabilities": prob_dict,
         "current_price": float(raw_data['Adj_Close'].iloc[-1]),

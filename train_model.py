@@ -8,7 +8,7 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import classification_report, log_loss
+from sklearn.metrics import classification_report, log_loss, accuracy_score
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 
 FEATURE_NAMES = [
@@ -18,25 +18,19 @@ FEATURE_NAMES = [
 
 
 def discretize_return(r: float) -> int:
-    """Map a 7-day forward return to a 5-class label.
+    """Map a 7-day forward return to a 3-class label.
 
     Classes:
-        2  — UP > 5%
-        1  — UP 3–5%
+        1  — UP > 3%
         0  — STABLE (within ±3%)
-       -1  — DOWN 3–5%
-       -2  — DOWN > 5%
+       -1  — DOWN > 3%
     """
-    if r > 0.05:
-        return 2
-    elif r > 0.03:
+    if r > 0.03:
         return 1
     elif r >= -0.03:
         return 0
-    elif r >= -0.05:
-        return -1
     else:
-        return -2
+        return -1
 
 
 def load_tickers(csv_path: str) -> list:
@@ -142,16 +136,17 @@ def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> No
     y_proba = pipeline.predict_proba(X_test)
 
     print("\n=== Held-out Test Set Evaluation ===")
-    label_names = ["DOWN>5%", "DOWN 3-5%", "STABLE", "UP 3-5%", "UP>5%"]
+    label_names = ["DOWN>3%", "STABLE", "UP>3%"]
     print(classification_report(y_test, y_pred, target_names=label_names))
-    print(f"Log-loss: {log_loss(y_test, y_proba):.4f}")
+    print(f"Accuracy : {accuracy_score(y_test, y_pred):.4f}")
+    print(f"Log-loss : {log_loss(y_test, y_proba):.4f}")
 
     model_data = {
         'model': pipeline,
         'features': FEATURE_NAMES,
         'description': (
-            '5-class HKEX stock predictor. '
-            'Classes: -2=DOWN>5%, -1=DOWN3-5%, 0=STABLE, 1=UP3-5%, 2=UP>5%. '
+            '3-class HKEX stock predictor. '
+            'Classes: -1=DOWN>3%, 0=STABLE, 1=UP>3%. '
             'Horizon: 7 trading days.'
         ),
     }

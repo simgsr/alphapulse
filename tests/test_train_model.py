@@ -7,18 +7,14 @@ from train_model import discretize_return, load_tickers
 
 
 class TestDiscretizeReturn:
-    def test_strong_up(self):
-        assert discretize_return(0.06) == 2
+    def test_up_large(self):
+        assert discretize_return(0.06) == 1
 
-    def test_mild_up(self):
+    def test_up_small(self):
         assert discretize_return(0.04) == 1
 
-    def test_exact_5pct_is_mild_up(self):
-        # +5% is the upper boundary of class 1 (UP 3-5%)
-        assert discretize_return(0.05) == 1
-
     def test_exact_3pct_is_stable(self):
-        # +3% is the upper boundary of class 0 (STABLE)
+        # boundary: +3% is the top of STABLE
         assert discretize_return(0.03) == 0
 
     def test_stable_zero(self):
@@ -31,18 +27,14 @@ class TestDiscretizeReturn:
         assert discretize_return(-0.02) == 0
 
     def test_exact_neg_3pct_is_stable(self):
-        # -3% is the lower boundary of class 0 (STABLE)
+        # boundary: -3% is the bottom of STABLE
         assert discretize_return(-0.03) == 0
 
-    def test_mild_down(self):
+    def test_down_small(self):
         assert discretize_return(-0.04) == -1
 
-    def test_exact_neg_5pct_is_mild_down(self):
-        # -5% is the upper boundary of class -1 (DOWN 3-5%)
-        assert discretize_return(-0.05) == -1
-
-    def test_strong_down(self):
-        assert discretize_return(-0.06) == -2
+    def test_down_large(self):
+        assert discretize_return(-0.06) == -1
 
 
 class TestLoadTickers:
@@ -118,7 +110,7 @@ class TestBuildTickerDataset:
              patch("train_model.calculate_technical_indicators", return_value=long_df):
             from train_model import build_ticker_dataset
             result = build_ticker_dataset("0001.hk")
-        assert set(result["target"].unique()).issubset({-2, -1, 0, 1, 2})
+        assert set(result["target"].unique()).issubset({-1, 0, 1})
 
     def test_no_nan_in_result(self):
         long_df = _make_synthetic_df(400)

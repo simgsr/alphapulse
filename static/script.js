@@ -23,19 +23,15 @@ const scanResults   = document.getElementById('scanResults');
 let probChart = null;
 
 const SIGNAL_CLASSES = {
-    '2':  'badge--up2',
     '1':  'badge--up1',
     '0':  'badge--neutral',
     '-1': 'badge--down1',
-    '-2': 'badge--down2',
 };
 
 const CHART_CONFIG = [
-    { key: '-2', label: 'DOWN >5%',  color: '#ef4444' },
-    { key: '-1', label: 'DOWN 3-5%', color: '#f97316' },
-    { key: '0',  label: 'STABLE',    color: '#fbbf24' },
-    { key: '1',  label: 'UP 3-5%',   color: '#4ade80' },
-    { key: '2',  label: 'UP >5%',    color: '#00ff88' },
+    { key: '-1', label: 'DOWN >3%', color: '#ef4444' },
+    { key: '0',  label: 'STABLE',   color: '#fbbf24' },
+    { key: '1',  label: 'UP >3%',   color: '#4ade80' },
 ];
 
 function showError(msg) {
@@ -96,12 +92,12 @@ function updateUI(data) {
     }
 
     const pct3 = Math.round(data.confidence_up_3pct * 100);
-    const pct5 = Math.round(data.confidence_up_5pct * 100);
+    const pctDown = Math.round(data.confidence_down_3pct * 100);
     conf3Pct.textContent = pct3 + '%';
-    conf5Pct.textContent = pct5 + '%';
+    conf5Pct.textContent = pctDown + '%';
     requestAnimationFrame(() => {
         conf3Bar.style.width = pct3 + '%';
-        conf5Bar.style.width = pct5 + '%';
+        conf5Bar.style.width = pctDown + '%';
     });
 
     renderChart(data.probabilities);
