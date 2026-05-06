@@ -3,17 +3,7 @@ import os
 import pandas as pd
 from unittest.mock import patch
 import pytest
-from train_model import discretize_return, load_tickers
-
-
-_NEW_FEATURES = [
-    'SMA_5_ratio', 'SMA_20_ratio', 'SMA_50_ratio',
-    'RSI_14', 'RSI_7',
-    'MACD', 'MACD_hist',
-    'BB_pct_b',
-    'Volume_ratio_20',
-    'Volatility_20', 'Returns_1d', 'Returns_5d', 'Returns_10d', 'Returns_20d',
-]
+from train_model import discretize_return, load_tickers, FEATURE_NAMES as _NEW_FEATURES
 
 
 class TestDiscretizeReturn:
