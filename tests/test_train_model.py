@@ -48,28 +48,20 @@ class TestDiscretizeReturn:
 
 
 class TestLoadTickers:
-    def test_returns_equity_tickers_only(self, tmp_path):
-        csv_content = (
-            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
-            "0001.hk,00001,CKH HOLDINGS,Equity,500,KYG217651051,\n"
-            "0002.hk,00002,CLP HOLDINGS,Equity,500,HK0002007356,\n"
-            "BOND1.hk,B001,SOME BOND,Bond,1000,HK000BOND01,\n"
-        )
-        csv_file = tmp_path / "test_hkex.csv"
+    def test_returns_tickers_from_single_column_csv(self, tmp_path):
+        csv_content = "0001.hk\n0002.hk\n0003.hk\n"
+        csv_file = tmp_path / "hkex.csv"
         csv_file.write_text(csv_content)
 
         tickers = load_tickers(str(csv_file))
 
         assert "0001.hk" in tickers
         assert "0002.hk" in tickers
-        assert "BOND1.hk" not in tickers
+        assert "0003.hk" in tickers
 
     def test_returns_list_of_strings(self, tmp_path):
-        csv_content = (
-            "Tickers,Stock Code,Name of Securities,Category,Board Lot,ISIN,RMB Counter\n"
-            "0001.hk,00001,CKH HOLDINGS,Equity,500,KYG217651051,\n"
-        )
-        csv_file = tmp_path / "test_hkex.csv"
+        csv_content = "0001.hk\n"
+        csv_file = tmp_path / "hkex.csv"
         csv_file.write_text(csv_content)
 
         tickers = load_tickers(str(csv_file))
