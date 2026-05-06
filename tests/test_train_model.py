@@ -6,6 +6,16 @@ import pytest
 from train_model import discretize_return, load_tickers
 
 
+_NEW_FEATURES = [
+    'SMA_5_ratio', 'SMA_20_ratio', 'SMA_50_ratio',
+    'RSI_14', 'RSI_7',
+    'MACD', 'MACD_hist',
+    'BB_pct_b',
+    'Volume_ratio_20',
+    'Volatility_20', 'Returns_1d', 'Returns_5d', 'Returns_10d', 'Returns_20d',
+]
+
+
 class TestDiscretizeReturn:
     def test_up_large(self):
         assert discretize_return(0.06) == 1
@@ -136,10 +146,7 @@ class TestBuildFullDataset:
     def _make_labeled_df(self, n_rows: int, start: str) -> pd.DataFrame:
         """Minimal labeled DataFrame as returned by build_ticker_dataset."""
         idx = pd.date_range(start, periods=n_rows, freq="B")
-        data = {f: np.ones(n_rows) for f in [
-            'SMA_5_ratio', 'SMA_20_ratio', 'RSI_14',
-            'Volatility_20', 'Returns_1d', 'Returns_5d'
-        ]}
+        data = {f: np.ones(n_rows) for f in _NEW_FEATURES}
         data['Adj_Close'] = np.ones(n_rows) * 100.0
         data['forward_return'] = np.zeros(n_rows)
         data['target'] = 0
@@ -181,10 +188,7 @@ class TestBuildFullDataset:
             from train_model import build_full_dataset
             (X_train, y_train), (X_test, y_test) = build_full_dataset(str(csv_file))
 
-        expected_features = [
-            'SMA_5_ratio', 'SMA_20_ratio', 'RSI_14',
-            'Volatility_20', 'Returns_1d', 'Returns_5d'
-        ]
+        expected_features = _NEW_FEATURES
         assert list(X_train.columns) == expected_features
         assert list(X_test.columns) == expected_features
 
