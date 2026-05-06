@@ -5,15 +5,17 @@ import joblib
 from typing import Optional, Tuple
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import classification_report, log_loss, accuracy_score
+from lightgbm import LGBMClassifier
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 
 FEATURE_NAMES = [
-    'SMA_5_ratio', 'SMA_20_ratio', 'RSI_14',
-    'Volatility_20', 'Returns_1d', 'Returns_5d'
+    'SMA_5_ratio', 'SMA_20_ratio', 'SMA_50_ratio',
+    'RSI_14', 'RSI_7',
+    'MACD', 'MACD_hist',
+    'BB_pct_b',
+    'Volume_ratio_20',
+    'Volatility_20', 'Returns_1d', 'Returns_5d', 'Returns_10d', 'Returns_20d',
 ]
 
 
@@ -34,9 +36,9 @@ def discretize_return(r: float) -> int:
 
 
 def load_tickers(csv_path: str) -> list:
-    """Return all Equity ticker symbols from the HKEX CSV."""
-    df = pd.read_csv(csv_path)
-    return df[df['Category'] == 'Equity']['Tickers'].tolist()
+    """Return ticker symbols from a single-column CSV (no header required)."""
+    df = pd.read_csv(csv_path, header=None)
+    return df.iloc[:, 0].dropna().str.strip().tolist()
 
 
 def build_ticker_dataset(ticker: str, period: str = '5y') -> Optional[pd.DataFrame]:
@@ -94,24 +96,30 @@ def build_pipeline() -> Pipeline:
     """Build the unfitted sklearn Pipeline.
 
     RobustScaler is resistant to HK small-cap outliers.
-    CalibratedClassifierCV with isotonic regression corrects RandomForest's
-    tendency to produce overconfident probability estimates.
-    TimeSeriesSplit ensures the calibration CV folds respect temporal order.
-    class_weight='balanced' compensates for the dominant STABLE class.
+    LGBMClassifier with class_weight='balanced' handles the dominant STABLE class.
+    LightGBM produces well-calibrated probabilities natively (no CalibratedClassifierCV needed).
     """
     return Pipeline([
         ('scaler', RobustScaler()),
-        ('clf', CalibratedClassifierCV(
-            RandomForestClassifier(
-                n_estimators=100,
-                class_weight='balanced',
-                n_jobs=2,
-                random_state=42,
-            ),
-            method='isotonic',
-            cv=TimeSeriesSplit(n_splits=3),
+        ('clf', LGBMClassifier(
+            n_estimators=300,
+            num_leaves=63,
+            learning_rate=0.05,
+            class_weight='balanced',
+            min_child_samples=20,
+            n_jobs=2,
+            random_state=42,
+            verbose=-1,
         ))
     ])
+
+
+def find_ticker_csv(data_dir: str) -> str:
+    """Return the path of the first CSV found in data_dir."""
+    csvs = sorted(f for f in os.listdir(data_dir) if f.endswith('.csv'))
+    if not csvs:
+        raise FileNotFoundError(f"No CSV file found in {data_dir}")
+    return os.path.join(data_dir, csvs[0])
 
 
 def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> None:
@@ -128,7 +136,7 @@ def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> No
     print(y_train.value_counts().sort_index().to_string())
 
     pipeline = build_pipeline()
-    print("\nFitting pipeline — this may take 30–60 minutes...")
+    print("\nFitting pipeline — this may take a few minutes...")
     pipeline.fit(X_train, y_train)
     print("Fitting complete.")
 
@@ -155,5 +163,6 @@ def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> No
 
 
 if __name__ == '__main__':
-    _csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'hkex.csv')
+    _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+    _csv = find_ticker_csv(_data_dir)
     train_and_save(_csv)
