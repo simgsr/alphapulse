@@ -10,18 +10,18 @@ pinned: false
 
 # AlphaPulse — HK Stock Forecast AI
 
-A full-stack machine learning web app that predicts 7-day price direction for HKEX stocks and surfaces the top asymmetric opportunities across HSI constituents.
+A full-stack machine learning web app that predicts 7-day price direction for HKEX stocks and surfaces the top asymmetric opportunities across a curated HK/SG watchlist.
 
 ## Features
 
 | Feature | Detail |
 |---|---|
-| **5-class prediction** | DOWN >5% / DOWN 3-5% / STABLE / UP 3-5% / UP >5% |
-| **Dual confidence bars** | P(UP >3%) and P(UP >5%) visualised as animated bars |
+| **3-class prediction** | DOWN >3% / STABLE / UP >3% over 7 trading days |
+| **Confidence bars** | P(UP >3%) and P(DOWN >3%) visualised as animated bars |
 | **Edge ratio** | P(up) / P(down) — highlights asymmetric setups |
-| **HSI screener** | `/scan` ranks 43 HSI constituents by edge ratio, returns top 5 |
-| **5-segment donut chart** | Full probability distribution per prediction |
-| **1-hour scan cache** | Screener results cached in-memory; re-fetched hourly |
+| **Built-in screener** | `/scan` ranks 46 HK+SG stocks by edge ratio, returns top 5 (concurrent fetch, cached 1 h) |
+| **My Watchlist** | Add tickers manually or import from CSV; scan your list with live progress |
+| **3-segment donut chart** | Full probability distribution (DOWN / STABLE / UP) |
 
 ## Architecture
 
@@ -31,8 +31,8 @@ Browser (mobile-first dark UI)
     │  GET /scan
     ▼
 FastAPI (app.py)
-    ├── get_price_data.py   — yfinance fetch + RSI/SMA/volatility features
-    ├── stock_model.joblib  — CalibratedClassifierCV(RandomForest, isotonic, TimeSeriesSplit)
+    ├── get_price_data.py   — yfinance fetch + 14 technical features
+    ├── stock_model.joblib  — RobustScaler → LGBMClassifier (3-class)
     └── static/             — index.html · style.css · script.js (Chart.js)
 ```
 
@@ -41,40 +41,54 @@ FastAPI (app.py)
 | Endpoint | Description |
 |---|---|
 | `GET /predict/{ticker}` | Single-ticker prediction (e.g. `0700.HK`, `AAPL`) |
-| `GET /scan` | Top 5 HSI picks by edge ratio (cached 1 h) |
+| `GET /scan` | Top 5 picks by edge ratio from built-in watchlist (cached 1 h) |
 
 **`/predict` response fields:**
 ```json
 {
-  "ticker": "0001.HK",
-  "prediction": 0,
-  "signal": "STABLE",
-  "confidence_up_3pct": 0.22,
-  "confidence_up_5pct": 0.16,
-  "edge_ratio": 0.73,
-  "probabilities": {"-2":0.20, "-1":0.11, "0":0.47, "1":0.06, "2":0.16},
-  "current_price": 68.0,
-  "last_updated": "2026-05-05"
+  "ticker": "0700.HK",
+  "prediction": 1,
+  "signal": "UP > 3%",
+  "confidence_up_3pct": 0.38,
+  "confidence_down_3pct": 0.22,
+  "edge_ratio": 1.73,
+  "probabilities": {"-1": 0.22, "0": 0.40, "1": 0.38},
+  "current_price": 413.96,
+  "last_updated": "2026-05-06"
 }
 ```
+
+## Model Details
+
+| Property | Value |
+|---|---|
+| Algorithm | `LGBMClassifier` (LightGBM) |
+| Preprocessing | `RobustScaler` (resistant to HK small-cap outliers) |
+| Features (14) | `SMA_5_ratio`, `SMA_20_ratio`, `SMA_50_ratio`, `RSI_14`, `RSI_7`, `MACD`, `MACD_hist`, `BB_pct_b`, `Volume_ratio_20`, `Volatility_20`, `Returns_1d`, `Returns_5d`, `Returns_10d`, `Returns_20d` |
+| Training data | 2,626 HKEX equity tickers, 5 years of daily OHLCV (~2.8M rows) |
+| Train/test split | 80 / 20 time-based |
+| Class weights | `balanced` |
+| Prediction horizon | 7 trading days |
+| Test accuracy | ~45% (3-class; random baseline = 33%) |
+| Test log-loss | ~1.04 |
 
 ## Project Structure
 
 ```
 .
 ├── app.py                  # FastAPI routes + inference logic
-├── get_price_data.py       # yfinance fetch + technical indicators
+├── get_price_data.py       # yfinance fetch + 14 technical indicators
 ├── train_model.py          # Full training pipeline (run locally)
-├── stock_model.joblib      # Trained model — NOT in git (hosted on HF Model Hub)
+├── stock_model.joblib      # Trained model (~6 MB, committed to repo)
 ├── static/
 │   ├── index.html
 │   ├── style.css
 │   └── script.js
 ├── tests/
-│   ├── test_app.py         # 11 unit tests
-│   └── test_train_model.py # 22 unit tests
+│   ├── test_app.py
+│   └── test_train_model.py
 ├── data/
-│   └── hkex.csv            # HKEX equity ticker list (used by train_model.py)
+│   └── alphapulse.csv      # HKEX equity ticker list (gitignored)
 ├── Dockerfile
 ├── render.yaml
 └── requirements.txt
@@ -86,7 +100,7 @@ FastAPI (app.py)
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
-# Run training (30-60 min, requires network):
+# (Optional) Retrain the model — takes ~30–60 min, requires network:
 python train_model.py
 
 # Start the app:
@@ -100,58 +114,13 @@ uvicorn app:app --reload --port 7860
 pytest tests/ -v
 ```
 
-## Deployment on Hugging Face Spaces
-
-The trained model (`stock_model.joblib`) is hosted in a separate HF Model repository and downloaded automatically at container startup.
-
-### Step 1 — Upload the model to HF Model Hub
-
-```bash
-pip install huggingface_hub
-huggingface-cli login
-
-# Create a model repo at huggingface.co/new, then upload:
-huggingface-cli upload <your-username>/alphapulse-model stock_model.joblib
-```
-
-### Step 2 — Create the Space
-
-1. Go to [huggingface.co/new-space](https://huggingface.co/new-space)
-2. Choose **Docker** as the SDK
-3. Push this repository to the Space:
-   ```bash
-   git remote add space https://huggingface.co/spaces/<your-username>/alphapulse
-   git push space main
-   ```
-
-### Step 3 — Set Space variables
-
-In the Space → **Settings → Variables and Secrets**, add:
-
-| Key | Value |
-|---|---|
-| `HF_MODEL_REPO` | `<your-username>/alphapulse-model` |
-| `HF_TOKEN` | Your HF token (only needed if the model repo is private) |
-
-The container downloads the model on first startup (~10-15 min for a large model).
-
-> **RAM requirement:** The current model (~24 GB on disk) requires at least **32 GB RAM**. Use a Space with a **CPU Upgrade (L)** or retrain with `n_estimators=30` and `max_depth=15` for a smaller model that runs on the free tier.
-
 ## Deployment on Render
 
-See [`render.yaml`](render.yaml). Set the `MODEL_URL` environment variable to a direct download URL for `stock_model.joblib` (e.g., the HF Hub raw URL).
+Render deploys automatically on every push to `master` via the Docker runtime defined in [`render.yaml`](render.yaml). No environment variables are required — `stock_model.joblib` is committed directly to the repository.
 
-## Model Details
-
-| Property | Value |
-|---|---|
-| Algorithm | `RandomForestClassifier` in `CalibratedClassifierCV` |
-| Calibration | Isotonic regression, `TimeSeriesSplit(n_splits=3)` |
-| Features | SMA_5_ratio, SMA_20_ratio, RSI_14, Volatility_20, Returns_1d, Returns_5d |
-| Training data | HKEX equity tickers, 5 years of daily OHLCV |
-| Train/test split | 80 / 20 time-based |
-| Class weights | `balanced` |
-| Prediction horizon | 7 trading days |
+1. Connect the GitHub repo to a Render web service
+2. Set runtime to **Docker**
+3. Push to `master` — Render builds and deploys automatically
 
 ## Disclaimer
 
