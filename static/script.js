@@ -73,6 +73,7 @@ function renderWatchlistChips() {
                 <button class="chip__remove" onclick="removeFromWatchlist('${t}')" aria-label="Remove ${t}">×</button>
             </span>
         `).join('');
+        scanSection.classList.remove('hidden');
     }
     document.getElementById('scanWatchlistBtn').classList.toggle('hidden', watchlist.length === 0);
 }
@@ -84,7 +85,7 @@ document.getElementById('csvInput').addEventListener('change', function (e) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = function (ev) {
-        const lines = ev.target.result.trim().split(/\r?\n/);
+        const lines = ev.target.result.replace(/^﻿/, '').trim().split(/\r\n|\r|\n/);
         if (!lines.length) return;
 
         const headerKeywords = ['ticker', 'symbol', 'code', 'stock', 'instrument'];
@@ -265,21 +266,38 @@ function updateUI(data) {
     scanSection.classList.remove('hidden');
 }
 
-// ── HSI scan ─────────────────────────────────────────────────────────────────
+// ── Watchlist scan (Top Picks) ────────────────────────────────────────────────
 
 async function performScan() {
+    if (watchlist.length === 0) {
+        scanResults.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Add tickers to your watchlist first.</p>';
+        return;
+    }
+
+    const loaderText = document.getElementById('scanLoaderText');
     scanLoader.classList.remove('hidden');
     scanResults.innerHTML = '';
     scanBtn.disabled = true;
 
+    const total = watchlist.length;
+    let done = 0;
+    loaderText.textContent = `Scanning 0 / ${total}…`;
+
     try {
-        const res = await fetch('/scan');
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.detail || `Server error (${res.status})`);
-        }
-        const picks = await res.json();
-        renderScanResults(picks);
+        const promises = watchlist.map(ticker =>
+            fetch(`/predict/${encodeURIComponent(ticker)}`)
+                .then(r => r.ok ? r.json() : null)
+                .catch(() => null)
+                .then(result => {
+                    done++;
+                    loaderText.textContent = `Scanning ${done} / ${total}…`;
+                    return result;
+                })
+        );
+        const settled = await Promise.all(promises);
+        const valid   = settled.filter(Boolean);
+        const sorted  = valid.sort((a, b) => b.edge_ratio - a.edge_ratio);
+        renderScanResults(sorted);
     } catch (e) {
         scanResults.innerHTML = `<p style="color:var(--down-strong);font-size:13px">${e.message}</p>`;
     } finally {
