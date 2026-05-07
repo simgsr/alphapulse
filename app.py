@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+import asyncio
 import joblib
 import os
 import time
@@ -129,6 +130,24 @@ async def predict(ticker: str):
     return build_prediction_response(ticker, model, latest_features, data)
 
 
+_scan_sem = asyncio.Semaphore(8)
+
+
+async def _fetch_and_predict(ticker: str) -> dict | None:
+    async with _scan_sem:
+        try:
+            data = await asyncio.to_thread(fetch_latest_data, ticker)
+            if data is None:
+                return None
+            processed = await asyncio.to_thread(calculate_technical_indicators, data)
+            if processed.empty:
+                return None
+            latest_features = processed[feature_names].iloc[-1:].values
+            return build_prediction_response(ticker, model, latest_features, data)
+        except Exception:
+            return None
+
+
 @app.get("/scan")
 async def scan():
     global _scan_cache
@@ -138,20 +157,8 @@ async def scan():
     if model is None:
         raise HTTPException(status_code=500, detail="Model not loaded on server")
 
-    results = []
-    for ticker in WATCHLIST:
-        try:
-            data = fetch_latest_data(ticker)
-            if data is None:
-                continue
-            processed = calculate_technical_indicators(data)
-            if processed.empty:
-                continue
-            latest_features = processed[feature_names].iloc[-1:].values
-            results.append(build_prediction_response(ticker, model, latest_features, data))
-        except Exception:
-            continue
-
+    results_raw = await asyncio.gather(*[_fetch_and_predict(t) for t in WATCHLIST])
+    results = [r for r in results_raw if r is not None]
     top5 = rank_scan_results(results, n=5)
     _scan_cache = {"data": top5, "ts": time.time()}
     return top5

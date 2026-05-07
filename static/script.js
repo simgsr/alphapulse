@@ -34,6 +34,161 @@ const CHART_CONFIG = [
     { key: '1',  label: 'UP >3%',   color: '#4ade80' },
 ];
 
+// ── Watchlist state ──────────────────────────────────────────────────────────
+
+let watchlist = JSON.parse(localStorage.getItem('watchlist') || '[]');
+
+function saveWatchlist() {
+    localStorage.setItem('watchlist', JSON.stringify(watchlist));
+}
+
+function addToWatchlist(ticker) {
+    ticker = ticker.toUpperCase().trim();
+    if (!ticker) return false;
+    if (watchlist.includes(ticker)) return false;
+    if (watchlist.length >= 50) {
+        showError('Watchlist is limited to 50 tickers. Remove some before adding more.');
+        return false;
+    }
+    watchlist.push(ticker);
+    saveWatchlist();
+    renderWatchlistChips();
+    return true;
+}
+
+function removeFromWatchlist(ticker) {
+    watchlist = watchlist.filter(t => t !== ticker);
+    saveWatchlist();
+    renderWatchlistChips();
+}
+
+function renderWatchlistChips() {
+    const container = document.getElementById('watchlistChips');
+    if (watchlist.length === 0) {
+        container.innerHTML = '<p class="watchlist-empty">No tickers added yet.</p>';
+    } else {
+        container.innerHTML = watchlist.map(t => `
+            <span class="chip">
+                ${t}
+                <button class="chip__remove" onclick="removeFromWatchlist('${t}')" aria-label="Remove ${t}">×</button>
+            </span>
+        `).join('');
+    }
+    document.getElementById('scanWatchlistBtn').classList.toggle('hidden', watchlist.length === 0);
+}
+
+// ── CSV import ───────────────────────────────────────────────────────────────
+
+document.getElementById('csvInput').addEventListener('change', function (e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function (ev) {
+        const lines = ev.target.result.trim().split(/\r?\n/);
+        if (!lines.length) return;
+
+        const headerKeywords = ['ticker', 'symbol', 'code', 'stock', 'instrument'];
+        const firstLower = lines[0].toLowerCase();
+        let startRow = 0;
+        let tickerCol = 0;
+
+        if (headerKeywords.some(k => firstLower.includes(k))) {
+            startRow = 1;
+            const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+            const idx = headers.findIndex(h => headerKeywords.some(k => h.includes(k)));
+            if (idx >= 0) tickerCol = idx;
+        }
+
+        lines.slice(startRow).forEach(line => {
+            const cols = line.split(',');
+            const raw = cols[tickerCol]?.trim().replace(/['"]/g, '');
+            if (raw) addToWatchlist(raw);
+        });
+    };
+    reader.readAsText(file);
+    this.value = '';
+});
+
+// ── Watchlist scan ───────────────────────────────────────────────────────────
+
+async function scanWatchlist() {
+    if (watchlist.length === 0) return;
+
+    const btn        = document.getElementById('scanWatchlistBtn');
+    const wLoader    = document.getElementById('watchlistScanLoader');
+    const loaderText = document.getElementById('watchlistScanLoaderText');
+    const wResults   = document.getElementById('watchlistResults');
+
+    btn.disabled = true;
+    wLoader.classList.remove('hidden');
+    wResults.innerHTML = '';
+
+    const total = watchlist.length;
+    let done = 0;
+    loaderText.textContent = `Scanning 0 / ${total}…`;
+
+    try {
+        const promises = watchlist.map(ticker =>
+            fetch(`/predict/${encodeURIComponent(ticker)}`)
+                .then(r => r.ok ? r.json() : null)
+                .catch(() => null)
+                .then(result => {
+                    done++;
+                    loaderText.textContent = `Scanning ${done} / ${total}…`;
+                    return result;
+                })
+        );
+        const settled = await Promise.all(promises);
+        const valid   = settled.filter(Boolean);
+        const sorted  = valid.sort((a, b) => b.edge_ratio - a.edge_ratio);
+        renderWatchlistResults(sorted);
+    } finally {
+        wLoader.classList.add('hidden');
+        btn.disabled = false;
+    }
+}
+
+function renderWatchlistResults(picks) {
+    const container = document.getElementById('watchlistResults');
+    if (!picks.length) {
+        container.innerHTML = '<p class="watchlist-empty">No data found for any ticker in your list.</p>';
+        return;
+    }
+    container.innerHTML = picks.map((p, i) => {
+        const edgeClass = p.edge_ratio >= 2 ? '' : 'pick-edge--low';
+        const conf3 = Math.round(p.confidence_up_3pct * 100);
+        return `
+        <div class="pick-card" onclick="fillAndAnalyze('${p.ticker}')">
+            <div class="pick-left">
+                <span class="pick-ticker">#${i + 1} ${p.ticker}</span>
+                <span class="pick-price">$${Number(p.current_price).toFixed(2)} · ${p.signal}</span>
+            </div>
+            <div class="pick-right">
+                <span class="pick-edge ${edgeClass}">${p.edge_ratio.toFixed(2)}×</span>
+                <span class="pick-conf">UP&gt;3% conf: ${conf3}%</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// ── Watchlist event wiring ───────────────────────────────────────────────────
+
+document.getElementById('watchlistAddBtn').addEventListener('click', () => {
+    const input = document.getElementById('watchlistInput');
+    if (addToWatchlist(input.value)) input.value = '';
+});
+
+document.getElementById('watchlistInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+        const input = document.getElementById('watchlistInput');
+        if (addToWatchlist(input.value)) input.value = '';
+    }
+});
+
+document.getElementById('scanWatchlistBtn').addEventListener('click', scanWatchlist);
+
+// ── Error helpers ────────────────────────────────────────────────────────────
+
 function showError(msg) {
     errorText.textContent = msg;
     errorBanner.classList.remove('hidden');
@@ -42,6 +197,8 @@ function showError(msg) {
 function clearError() {
     errorBanner.classList.add('hidden');
 }
+
+// ── Ticker analysis ──────────────────────────────────────────────────────────
 
 async function performAnalysis() {
     const ticker = tickerInput.value.trim();
@@ -91,7 +248,7 @@ function updateUI(data) {
         edgeDisplay.textContent = `Edge ${edge.toFixed(2)}× neutral`;
     }
 
-    const pct3 = Math.round(data.confidence_up_3pct * 100);
+    const pct3    = Math.round(data.confidence_up_3pct * 100);
     const pctDown = Math.round(data.confidence_down_3pct * 100);
     conf3Pct.textContent = pct3 + '%';
     conf5Pct.textContent = pctDown + '%';
@@ -108,6 +265,8 @@ function updateUI(data) {
     scanSection.classList.remove('hidden');
 }
 
+// ── HSI scan ─────────────────────────────────────────────────────────────────
+
 async function performScan() {
     scanLoader.classList.remove('hidden');
     scanResults.innerHTML = '';
@@ -115,7 +274,10 @@ async function performScan() {
 
     try {
         const res = await fetch('/scan');
-        if (!res.ok) throw new Error('Scan failed');
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `Server error (${res.status})`);
+        }
         const picks = await res.json();
         renderScanResults(picks);
     } catch (e) {
@@ -153,6 +315,8 @@ function fillAndAnalyze(ticker) {
     performAnalysis();
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+
+// ── Chart ────────────────────────────────────────────────────────────────────
 
 function renderChart(probs) {
     const ctx = document.getElementById('probChart').getContext('2d');
@@ -195,6 +359,10 @@ function renderChart(probs) {
     `).join('');
 }
 
+// ── Init ─────────────────────────────────────────────────────────────────────
+
 predictBtn.addEventListener('click', performAnalysis);
 tickerInput.addEventListener('keydown', e => { if (e.key === 'Enter') performAnalysis(); });
 scanBtn.addEventListener('click', performScan);
+
+renderWatchlistChips();

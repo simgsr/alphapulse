@@ -75,14 +75,14 @@
                         <span id="conf5Pct" class="confidence-card__value">0%</span>
                     </div>
                     <div class="confidence-bar">
-                        <div id="conf5Bar" class="confidence-bar__fill confidence-bar__fill--strong" style="width:0%"></div>
+                        <div id="conf5Bar" class="confidence-bar__fill confidence-bar__fill--down" style="width:0%"></div>
                     </div>
                 </div>
             </div>
 
             <div class="chart-section">
                 <div class="chart-wrap">
-                    <canvas id="probChart"></canvas>
+                    <canvas id="probChart" width="180" height="180"></canvas>
                 </div>
                 <div class="chart-legend" id="chartLegend"></div>
             </div>
@@ -101,6 +101,36 @@
                 <p class="loader__text">Scanning 43 stocks…</p>
             </div>
             <div id="scanResults" class="scan-results"></div>
+        </section>
+
+        <section class="watchlist-section">
+            <div class="scan-header">
+                <span class="scan-title">My Watchlist</span>
+                <label class="import-label">
+                    Import CSV
+                    <input type="file" id="csvInput" accept=".csv" hidden>
+                </label>
+            </div>
+            <div class="watchlist-add-row">
+                <input
+                    type="text"
+                    id="watchlistInput"
+                    class="search-input watchlist-input"
+                    placeholder="Add ticker (e.g. 0700.HK)"
+                    autocomplete="off"
+                    autocapitalize="characters"
+                >
+                <button id="watchlistAddBtn" class="scan-btn watchlist-add-btn">Add</button>
+            </div>
+            <div id="watchlistChips" class="watchlist-chips"></div>
+            <button id="scanWatchlistBtn" class="scan-btn scan-watchlist-btn hidden">
+                Scan My List
+            </button>
+            <div id="watchlistScanLoader" class="scan-loader hidden">
+                <div class="spinner"></div>
+                <p id="watchlistScanLoaderText" class="loader__text">Scanning…</p>
+            </div>
+            <div id="watchlistResults" class="scan-results"></div>
         </section>
 
         <p class="disclaimer">Not financial advice. Based on historical patterns only.</p>
