@@ -23,6 +23,12 @@ def test_new_columns_present():
         'BB_pct_b',
         'Volume_ratio_20',
         'Volatility_20', 'Returns_1d', 'Returns_5d', 'Returns_10d', 'Returns_20d',
+        'Stoch_K', 'Stoch_D',
+        'ATR_ratio',
+        'ADX_14',
+        'OBV_ratio',
+        'CCI_20',
+        'CMF_20',
     ]:
         assert col in df.columns, f"Missing column: {col}"
 
@@ -67,3 +73,39 @@ def test_sma_50_ratio_near_one_for_flat_price():
     )
     df = calculate_technical_indicators(flat)
     assert (df['SMA_50_ratio'] - 1.0).abs().max() < 1e-9
+
+
+def test_stoch_k_bounded():
+    df = calculate_technical_indicators(_make_df())
+    assert df['Stoch_K'].between(0, 100).all()
+
+
+def test_stoch_d_bounded():
+    df = calculate_technical_indicators(_make_df())
+    assert df['Stoch_D'].between(0, 100).all()
+
+
+def test_atr_ratio_positive():
+    df = calculate_technical_indicators(_make_df())
+    assert (df['ATR_ratio'] > 0).all()
+
+
+def test_adx_14_bounded():
+    df = calculate_technical_indicators(_make_df())
+    assert (df['ADX_14'] >= 0).all()
+    assert (df['ADX_14'] <= 100).all()
+
+
+def test_obv_ratio_no_nan():
+    df = calculate_technical_indicators(_make_df())
+    assert df['OBV_ratio'].isna().sum() == 0
+
+
+def test_cci_20_no_nan():
+    df = calculate_technical_indicators(_make_df())
+    assert df['CCI_20'].isna().sum() == 0
+
+
+def test_cmf_20_bounded():
+    df = calculate_technical_indicators(_make_df())
+    assert df['CMF_20'].between(-1, 1).all()

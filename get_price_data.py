@@ -70,4 +70,47 @@ def calculate_technical_indicators(df):
     df['Returns_10d'] = df['Adj_Close'].pct_change(10)
     df['Returns_20d'] = df['Adj_Close'].pct_change(20)
 
+    # Stochastic %K/%D (14-day, close-based approximation)
+    low_14 = df['Adj_Close'].rolling(window=14).min()
+    high_14 = df['Adj_Close'].rolling(window=14).max()
+    range_14 = (high_14 - low_14).replace(0, np.nan)
+    df['Stoch_K'] = ((df['Adj_Close'] - low_14) / range_14 * 100).fillna(50)
+    df['Stoch_D'] = df['Stoch_K'].rolling(window=3).mean()
+
+    # ATR ratio (14-day, close-based simplified True Range)
+    tr = df['Adj_Close'].diff().abs()
+    atr_14 = tr.rolling(window=14).mean()
+    df['ATR_ratio'] = (atr_14 / df['Adj_Close'].replace(0, np.nan)).fillna(0)
+
+    # ADX (14-day, close-based approximation using directional movement)
+    close_diff = df['Adj_Close'].diff()
+    pos_dm = close_diff.clip(lower=0)
+    neg_dm = (-close_diff).clip(lower=0)
+    atr14_adx = close_diff.abs().rolling(14).mean().replace(0, np.nan)
+    pdi = 100 * pos_dm.rolling(14).mean() / atr14_adx
+    ndi = 100 * neg_dm.rolling(14).mean() / atr14_adx
+    dx_denom = (pdi + ndi).replace(0, np.nan)
+    dx = (100 * (pdi - ndi).abs() / dx_denom).fillna(0)
+    df['ADX_14'] = dx.rolling(14).mean().fillna(0)
+
+    # OBV ratio vs 20-day SMA of OBV
+    direction = np.sign(df['Adj_Close'].diff().fillna(0))
+    obv = (direction * df['Adj_Volume']).cumsum()
+    obv_sma20 = obv.rolling(window=20).mean()
+    df['OBV_ratio'] = (obv / obv_sma20.replace(0, np.nan)).fillna(1)
+
+    # CCI_20 (Commodity Channel Index, 20-day)
+    tp = df['Adj_Close']
+    sma20_tp = tp.rolling(20).mean()
+    mad20 = tp.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    df['CCI_20'] = ((tp - sma20_tp) / (0.015 * mad20.replace(0, np.nan))).fillna(0)
+
+    # CMF_20 (Chaikin Money Flow, 20-day, close-only approximation)
+    mfm = (2 * df['Adj_Close'] - df['Adj_Close'].rolling(2).min() - df['Adj_Close'].rolling(2).max())
+    mfm = mfm / (df['Adj_Close'].rolling(2).max() - df['Adj_Close'].rolling(2).min()).replace(0, np.nan)
+    mfm = mfm.fillna(0)
+    mf_vol = mfm * df['Adj_Volume']
+    df['CMF_20'] = mf_vol.rolling(20).sum() / df['Adj_Volume'].rolling(20).sum().replace(0, np.nan)
+    df['CMF_20'] = df['CMF_20'].fillna(0).clip(-1, 1)
+
     return df.dropna()
