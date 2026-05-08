@@ -138,6 +138,27 @@ class TestBuildTickerDataset:
         assert result["forward_return"].max() <= 0.30
         assert result["forward_return"].min() >= -0.30
 
+    def test_5d_horizon_uses_shift_5(self):
+        long_df = _make_synthetic_df(400)
+        with patch("train_model.fetch_latest_data", return_value=long_df), \
+             patch("train_model.calculate_technical_indicators", return_value=long_df):
+            from train_model import build_ticker_dataset
+            result = build_ticker_dataset("0001.hk", horizon=5, up_thresh=0.02,
+                                          down_thresh=0.02, clip=0.20)
+        assert result is not None
+        assert result["forward_return"].max() <= 0.20
+        assert result["forward_return"].min() >= -0.20
+
+    def test_14d_horizon_uses_shift_14(self):
+        long_df = _make_synthetic_df(400)
+        with patch("train_model.fetch_latest_data", return_value=long_df), \
+             patch("train_model.calculate_technical_indicators", return_value=long_df):
+            from train_model import build_ticker_dataset
+            result = build_ticker_dataset("0001.hk", horizon=14, up_thresh=0.05,
+                                          down_thresh=0.05, clip=0.30)
+        assert result is not None
+        assert set(result["target"].unique()).issubset({-1, 0, 1})
+
 
 class TestBuildFullDataset:
     def _make_labeled_df(self, n_rows: int, start: str) -> pd.DataFrame:

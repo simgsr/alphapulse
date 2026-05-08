@@ -47,22 +47,29 @@ def load_tickers(csv_path: str) -> list:
     return df.iloc[:, 0].dropna().str.strip().tolist()
 
 
-def build_ticker_dataset(ticker: str, period: str = '5y') -> Optional[pd.DataFrame]:
+def build_ticker_dataset(
+    ticker: str,
+    period: str = '5y',
+    horizon: int = 7,
+    up_thresh: float = 0.03,
+    down_thresh: float = 0.03,
+    clip: float = 0.30,
+) -> Optional[pd.DataFrame]:
     """Fetch, engineer features, and label one ticker.
 
     Returns None if data is unavailable or fewer than 252 labeled rows remain.
-    The 7-day forward return is clipped to ±30% to filter data errors and
-    unadjusted corporate actions.
     """
     raw = fetch_latest_data(ticker, period=period)
     if raw is None:
         return None
     df = calculate_technical_indicators(raw)
     df = df.copy()
-    df['forward_return'] = df['Adj_Close'].shift(-7) / df['Adj_Close'] - 1
+    df['forward_return'] = df['Adj_Close'].shift(-horizon) / df['Adj_Close'] - 1
     df = df.dropna(subset=['forward_return'])
-    df['forward_return'] = df['forward_return'].clip(-0.30, 0.30)
-    df['target'] = df['forward_return'].apply(discretize_return)
+    df['forward_return'] = df['forward_return'].clip(-clip, clip)
+    df['target'] = df['forward_return'].apply(
+        lambda r: discretize_return(r, up_thresh=up_thresh, down_thresh=down_thresh)
+    )
     if len(df) < 252:
         return None
     return df
