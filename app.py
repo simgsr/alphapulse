@@ -555,7 +555,9 @@ with gr.Blocks(title="AlphaPulse") as demo:
             scale=4,
         )
         analyze_btn = gr.Button("ANALYZE", variant="primary", scale=1)
-    result_out = gr.HTML(value="")
+    with gr.Row():
+        result_out_5d = gr.HTML(value="")
+        result_out_14d = gr.HTML(value="")
 
     # ── Watchlist ─────────────────────────────────────────────────────────────
     gr.HTML('<div class="sec-label" style="margin-top:18px;">── WATCHLIST ──</div>')
@@ -598,16 +600,17 @@ with gr.Blocks(title="AlphaPulse") as demo:
 
     # ── Wiring ────────────────────────────────────────────────────────────────
     _wl_outs = [watchlist_state, remove_cg]
+    _analyze_outs = [result_out_5d, result_out_14d] + _wl_outs
 
     analyze_btn.click(
         fn=analyze,
         inputs=[ticker_in, watchlist_state],
-        outputs=[result_out] + _wl_outs,
+        outputs=_analyze_outs,
     )
     ticker_in.submit(
         fn=analyze,
         inputs=[ticker_in, watchlist_state],
-        outputs=[result_out] + _wl_outs,
+        outputs=_analyze_outs,
     )
     add_btn.click(
         fn=add_ticker,
