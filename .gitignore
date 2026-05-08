@@ -10,6 +10,10 @@ tests/__pycache__/
 htmlcov/
 .claude/
 scratch/
+memory/
 data/*.parquet
 data/*.feather
 data/*.csv
+watchlist.json
+stock_model.joblib
+*.joblib
