@@ -36,6 +36,21 @@ class TestDiscretizeReturn:
     def test_down_large(self):
         assert discretize_return(-0.06) == -1
 
+    def test_custom_up_thresh(self):
+        assert discretize_return(0.025, up_thresh=0.02, down_thresh=0.02) == 1
+
+    def test_custom_down_thresh(self):
+        assert discretize_return(-0.025, up_thresh=0.02, down_thresh=0.02) == -1
+
+    def test_stable_within_custom_thresholds(self):
+        assert discretize_return(0.015, up_thresh=0.02, down_thresh=0.02) == 0
+
+    def test_14d_up_thresh(self):
+        assert discretize_return(0.04, up_thresh=0.05, down_thresh=0.05) == 0
+
+    def test_14d_down_thresh(self):
+        assert discretize_return(-0.06, up_thresh=0.05, down_thresh=0.05) == -1
+
 
 class TestLoadTickers:
     def test_returns_tickers_from_single_column_csv(self, tmp_path):

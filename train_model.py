@@ -25,17 +25,17 @@ FEATURE_NAMES = [
 ]
 
 
-def discretize_return(r: float) -> int:
-    """Map a 7-day forward return to a 3-class label.
+def discretize_return(r: float, up_thresh: float = 0.03, down_thresh: float = 0.03) -> int:
+    """Map a forward return to a 3-class label.
 
     Classes:
-        1  — UP > 3%
-        0  — STABLE (within ±3%)
-       -1  — DOWN > 3%
+        1  — UP   > up_thresh
+        0  — STABLE (within thresholds)
+       -1  — DOWN > down_thresh
     """
-    if r > 0.03:
+    if r > up_thresh:
         return 1
-    elif r >= -0.03:
+    elif r >= -down_thresh:
         return 0
     else:
         return -1
