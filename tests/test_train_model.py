@@ -178,7 +178,7 @@ class TestBuildFullDataset:
         df_a = self._make_labeled_df(300, "2020-01-01")
         df_b = self._make_labeled_df(300, "2020-01-01")
 
-        def mock_build(ticker, period='5y'):
+        def mock_build(ticker, period='5y', **kwargs):
             return df_a if ticker == '0001.hk' else df_b
 
         with patch("train_model.build_ticker_dataset", side_effect=mock_build):
@@ -210,11 +210,73 @@ class TestBuildFullDataset:
 
         df_a = self._make_labeled_df(300, "2020-01-01")
 
-        def mock_build(ticker, period='5y'):
+        def mock_build(ticker, period='5y', **kwargs):
             return df_a if ticker == '0001.hk' else None
 
         with patch("train_model.build_ticker_dataset", side_effect=mock_build):
             from train_model import build_full_dataset
             (X_train, y_train), _ = build_full_dataset(str(csv_file))
+
+        assert len(X_train) > 0
+
+    def test_horizon_param_forwarded(self, tmp_path):
+        csv_file = tmp_path / "hkex.csv"
+        csv_file.write_text("0001.hk\n")
+
+        df_a = self._make_labeled_df(300, "2020-01-01")
+        received_kwargs = {}
+
+        def mock_build(ticker, **kwargs):
+            received_kwargs.update(kwargs)
+            return df_a
+
+        with patch("train_model.build_ticker_dataset", side_effect=mock_build):
+            from train_model import build_full_dataset
+            build_full_dataset(str(csv_file), horizon=5, up_thresh=0.02, down_thresh=0.02)
+
+        assert received_kwargs.get('horizon') == 5
+        assert received_kwargs.get('up_thresh') == 0.02
+
+
+class TestBuildFullDatasetSGX:
+    def _make_labeled_df(self, n_rows: int, start: str) -> pd.DataFrame:
+        from train_model import FEATURE_NAMES as _FEATS
+        idx = pd.date_range(start, periods=n_rows, freq="B")
+        data = {f: np.ones(n_rows) for f in _FEATS}
+        data['Adj_Close'] = np.ones(n_rows) * 100.0
+        data['forward_return'] = np.zeros(n_rows)
+        data['target'] = 0
+        return pd.DataFrame(data, index=idx)
+
+    def test_extra_csv_merges_tickers(self, tmp_path):
+        hk_csv = tmp_path / "hkex.csv"
+        hk_csv.write_text("0001.hk\n")
+        sg_csv = tmp_path / "sgx_tickers.csv"
+        sg_csv.write_text("D05.SI\n")
+
+        df_a = self._make_labeled_df(300, "2020-01-01")
+        df_b = self._make_labeled_df(300, "2020-06-01")
+        call_log = []
+
+        def mock_build(ticker, period='5y', **kwargs):
+            call_log.append(ticker)
+            return df_a if ticker == '0001.hk' else df_b
+
+        with patch("train_model.build_ticker_dataset", side_effect=mock_build):
+            from train_model import build_full_dataset
+            build_full_dataset(str(hk_csv), extra_csv_paths=[str(sg_csv)])
+
+        assert '0001.hk' in call_log
+        assert 'D05.SI' in call_log
+
+    def test_no_extra_csv_runs_normally(self, tmp_path):
+        hk_csv = tmp_path / "hkex.csv"
+        hk_csv.write_text("0001.hk\n")
+
+        df_a = self._make_labeled_df(300, "2020-01-01")
+
+        with patch("train_model.build_ticker_dataset", return_value=df_a):
+            from train_model import build_full_dataset
+            (X_train, _), _ = build_full_dataset(str(hk_csv))
 
         assert len(X_train) > 0

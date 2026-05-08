@@ -75,19 +75,31 @@ def build_ticker_dataset(
     return df
 
 
-def build_full_dataset(csv_path: str) -> Tuple[Tuple, Tuple]:
-    """Fetch all HKEX equity tickers, combine, and time-split 80/20.
+def build_full_dataset(
+    csv_path: str,
+    horizon: int = 7,
+    up_thresh: float = 0.03,
+    down_thresh: float = 0.03,
+    extra_csv_paths: list = None,
+) -> Tuple[Tuple, Tuple]:
+    """Fetch all tickers, combine, and time-split 80/20.
 
     Returns:
         ((X_train, y_train), (X_test, y_test))
     """
     tickers = load_tickers(csv_path)
+    if extra_csv_paths:
+        for extra in extra_csv_paths:
+            tickers += load_tickers(extra)
+        tickers = list(dict.fromkeys(tickers))  # deduplicate, preserve order
+
     frames = []
     skipped = 0
     for i, ticker in enumerate(tickers):
         if i % 100 == 0:
             print(f"  [{i}/{len(tickers)}] Processing tickers...", flush=True)
-        df = build_ticker_dataset(ticker)
+        df = build_ticker_dataset(ticker, horizon=horizon,
+                                  up_thresh=up_thresh, down_thresh=down_thresh)
         if df is not None:
             frames.append(df)
         else:
@@ -115,8 +127,8 @@ def build_pipeline() -> Pipeline:
     return Pipeline([
         ('scaler', RobustScaler()),
         ('clf', LGBMClassifier(
-            n_estimators=300,
-            num_leaves=63,
+            n_estimators=500,
+            num_leaves=95,
             learning_rate=0.05,
             class_weight='balanced',
             min_child_samples=20,
@@ -135,13 +147,30 @@ def find_ticker_csv(data_dir: str) -> str:
     return os.path.join(data_dir, csvs[0])
 
 
-def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> None:
+def train_and_save(
+    csv_path: str,
+    horizon: int = 7,
+    up_thresh: float = 0.03,
+    down_thresh: float = 0.03,
+    clip: float = 0.30,
+    output_path: str = 'stock_model.joblib',
+    extra_csv_paths: list = None,
+) -> None:
     """Full training run: load data, fit pipeline, evaluate, save model."""
-    print("=== AlphaPulse Model Training ===")
+    from sklearn.metrics import precision_score, recall_score
+    print(f"\n=== AlphaPulse Model Training — {horizon}-day horizon ===")
     print(f"Ticker source : {csv_path}")
+    print(f"Thresholds    : UP > {up_thresh*100:.0f}% / DOWN < -{down_thresh*100:.0f}%")
+    print(f"Clip range    : ±{clip*100:.0f}%")
     print(f"Output path   : {output_path}\n")
 
-    (X_train, y_train), (X_test, y_test) = build_full_dataset(csv_path)
+    (X_train, y_train), (X_test, y_test) = build_full_dataset(
+        csv_path,
+        horizon=horizon,
+        up_thresh=up_thresh,
+        down_thresh=down_thresh,
+        extra_csv_paths=extra_csv_paths,
+    )
 
     print(f"\nTraining rows : {len(X_train):,}")
     print(f"Test rows     : {len(X_test):,}")
@@ -157,18 +186,35 @@ def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> No
     y_proba = pipeline.predict_proba(X_test)
 
     print("\n=== Held-out Test Set Evaluation ===")
-    label_names = ["DOWN>3%", "STABLE", "UP>3%"]
+    label_names = [f"DOWN>{down_thresh*100:.0f}%", "STABLE", f"UP>{up_thresh*100:.0f}%"]
     print(classification_report(y_test, y_pred, target_names=label_names))
     print(f"Accuracy : {accuracy_score(y_test, y_pred):.4f}")
     print(f"Log-loss : {log_loss(y_test, y_proba):.4f}")
 
+    classes_list = list(pipeline.classes_)
+    up_idx = classes_list.index(1)
+    y_proba_up = y_proba[:, up_idx]
+    y_test_bin = (y_test == 1).astype(int)
+    thresholds = np.arange(0.30, 0.61, 0.05)
+    print(f"\n=== UP class Precision / Recall sweep ===")
+    print(f"{'Threshold':>10} {'Precision':>10} {'Recall':>10} {'Signals':>10}")
+    for t in thresholds:
+        y_pred_t = (y_proba_up >= t).astype(int)
+        n_sig = int(y_pred_t.sum())
+        prec = precision_score(y_test_bin, y_pred_t, zero_division=0)
+        rec = recall_score(y_test_bin, y_pred_t, zero_division=0)
+        print(f"{t:>10.2f} {prec:>10.4f} {rec:>10.4f} {n_sig:>10}")
+
     model_data = {
         'model': pipeline,
         'features': FEATURE_NAMES,
+        'horizon': horizon,
+        'up_thresh': up_thresh,
+        'down_thresh': down_thresh,
         'description': (
-            '3-class HKEX stock predictor. '
-            'Classes: -1=DOWN>3%, 0=STABLE, 1=UP>3%. '
-            'Horizon: 7 trading days.'
+            f'3-class stock predictor. '
+            f'Classes: -1=DOWN>{down_thresh*100:.0f}%, 0=STABLE, 1=UP>{up_thresh*100:.0f}%. '
+            f'Horizon: {horizon} trading days.'
         ),
     }
     joblib.dump(model_data, output_path)
@@ -177,5 +223,27 @@ def train_and_save(csv_path: str, output_path: str = 'stock_model.joblib') -> No
 
 if __name__ == '__main__':
     _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-    _csv = find_ticker_csv(_data_dir)
-    train_and_save(_csv)
+    _hk_csv = find_ticker_csv(_data_dir)
+    _sgx_csv = os.path.join(_data_dir, 'sgx_tickers.csv')
+    _extra = [_sgx_csv] if os.path.exists(_sgx_csv) else None
+    if _extra:
+        print(f"SGX tickers found: {_sgx_csv}")
+
+    train_and_save(
+        _hk_csv,
+        horizon=5,
+        up_thresh=0.02,
+        down_thresh=0.02,
+        clip=0.20,
+        output_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_model_5d.joblib'),
+        extra_csv_paths=_extra,
+    )
+    train_and_save(
+        _hk_csv,
+        horizon=14,
+        up_thresh=0.05,
+        down_thresh=0.05,
+        clip=0.30,
+        output_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_model_14d.joblib'),
+        extra_csv_paths=_extra,
+    )
