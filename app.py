@@ -9,17 +9,22 @@ from concurrent.futures import ThreadPoolExecutor
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 
 _here = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(_here, 'stock_model.joblib')
+MODEL_5D_PATH = os.path.join(_here, 'stock_model_5d.joblib')
+MODEL_14D_PATH = os.path.join(_here, 'stock_model_14d.joblib')
 WATCHLIST_PATH = os.path.join(_here, 'watchlist.json')
 
-try:
-    model_data = joblib.load(MODEL_PATH)
-    model = model_data['model']
-    feature_names = model_data['features']
-except Exception as e:
-    print(f"Error loading model: {e}")
-    model = None
-    feature_names = []
+
+def _load_model(path):
+    try:
+        d = joblib.load(path)
+        return d['model'], d['features']
+    except Exception as e:
+        print(f"Error loading model {path}: {e}")
+        return None, []
+
+
+model_5d, feature_names_5d = _load_model(MODEL_5D_PATH)
+model_14d, feature_names_14d = _load_model(MODEL_14D_PATH)
 
 SIGNAL_MAP = {
     1: "UP > 3%",
@@ -110,7 +115,7 @@ def rank_scan_results(results: list, n: int = 5) -> list:
 
 # ── Data + prediction pipeline ───────────────────────────────────────────────
 
-def _build_prediction(ticker: str) -> dict | None:
+def _build_prediction(ticker: str, mdl, feat_names: list) -> dict | None:
     try:
         data = fetch_latest_data(ticker)
         if data is None:
@@ -118,10 +123,53 @@ def _build_prediction(ticker: str) -> dict | None:
         processed = calculate_technical_indicators(data)
         if processed.empty:
             return None
-        latest = processed[feature_names].iloc[-1:].values
-        return build_prediction_response(ticker, model, latest, data)
+        latest = processed[feat_names].iloc[-1:].values
+        return build_prediction_response(ticker, mdl, latest, data)
     except Exception as e:
         print(f"Prediction error for {ticker}: {e}")
+        return None
+
+
+def _build_dual_prediction(ticker: str) -> dict | None:
+    try:
+        data = fetch_latest_data(ticker)
+        if data is None:
+            return None
+        processed = calculate_technical_indicators(data)
+        if processed.empty:
+            return None
+
+        result = {
+            "ticker": ticker,
+            "current_price": float(data['Adj_Close'].iloc[-1]),
+            "last_updated": str(data.index[-1].date()),
+        }
+
+        if model_5d is not None:
+            latest = processed[feature_names_5d].iloc[-1:].values
+            r5 = build_prediction_response(ticker, model_5d, latest, data)
+            result.update({
+                "signal_5d": r5["signal"],
+                "confidence_up_5d": r5["confidence_up_3pct"],
+                "confidence_down_5d": r5["confidence_down_3pct"],
+                "edge_ratio_5d": r5["edge_ratio"],
+                "prediction_5d": r5["prediction"],
+            })
+
+        if model_14d is not None:
+            latest = processed[feature_names_14d].iloc[-1:].values
+            r14 = build_prediction_response(ticker, model_14d, latest, data)
+            result.update({
+                "signal_14d": r14["signal"],
+                "confidence_up_14d": r14["confidence_up_3pct"],
+                "confidence_down_14d": r14["confidence_down_3pct"],
+                "edge_ratio_14d": r14["edge_ratio"],
+                "prediction_14d": r14["prediction"],
+            })
+
+        return result
+    except Exception as e:
+        print(f"Dual prediction error for {ticker}: {e}")
         return None
 
 
@@ -132,7 +180,7 @@ _ERR_STYLE = f"color:#6b1616;font-size:15px;{_MONO}"
 
 
 
-def _result_html(r: dict) -> str:
+def _result_html(r: dict, label: str = "") -> str:
     up_pct = round(r['confidence_up_3pct'] * 100)
     dn_pct = round(r['confidence_down_3pct'] * 100)
     if r['prediction'] == 1:
@@ -141,11 +189,18 @@ def _result_html(r: dict) -> str:
         sig_color = "#6b1616"
     else:
         sig_color = "#5a4a15"
+    label_html = (
+        f'<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;'
+        f'color:#888;margin-bottom:4px;">{label}</div>'
+        if label else ""
+    )
+    horizon = r.get('horizon', 7)
     return f"""
 <div style="border:1px solid #b8b2aa;padding:18px 20px;background:#faf8f4;{_MONO}margin:4px 0;">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;
               border-bottom:1px solid #d0cac2;padding-bottom:12px;margin-bottom:14px;">
     <div>
+      {label_html}
       <div style="font-size:24px;font-weight:700;letter-spacing:1px;color:#1a1a18;">{r['ticker']}</div>
       <div style="font-size:16px;color:#555;margin-top:3px;">{r['current_price']:.3f}</div>
     </div>
@@ -155,14 +210,14 @@ def _result_html(r: dict) -> str:
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:15px;">
-    <span style="width:180px;color:#555;flex-shrink:0;">UP &gt;3% in 7 days</span>
+    <span style="width:180px;color:#555;flex-shrink:0;">UP &gt;3% in {horizon} days</span>
     <div style="flex:1;height:9px;background:#e5e0d9;border:1px solid #c8c2ba;">
       <div style="width:{up_pct}%;height:100%;background:#1e4d17;"></div>
     </div>
     <span style="width:42px;text-align:right;font-weight:700;color:#1a1a18;">{up_pct}%</span>
   </div>
   <div style="display:flex;align-items:center;gap:10px;font-size:15px;">
-    <span style="width:180px;color:#555;flex-shrink:0;">DOWN &gt;3% in 7 days</span>
+    <span style="width:180px;color:#555;flex-shrink:0;">DOWN &gt;3% in {horizon} days</span>
     <div style="flex:1;height:9px;background:#e5e0d9;border:1px solid #c8c2ba;">
       <div style="width:{dn_pct}%;height:100%;background:#6b1616;"></div>
     </div>
@@ -176,36 +231,48 @@ def _result_html(r: dict) -> str:
 def _scan_html(results: list) -> str:
     if not results:
         return f'<p style="{_ERR_STYLE}">No data available for any ticker in your watchlist.</p>'
+
+    def _sig_color(pred):
+        if pred == 1:
+            return "#1e4d17"
+        elif pred == -1:
+            return "#6b1616"
+        return "#5a4a15"
+
     rows = ""
     for i, r in enumerate(results):
-        up_pct = round(r['confidence_up_3pct'] * 100)
-        if r['prediction'] == 1:
-            sig_color = "#1e4d17"
-        elif r['prediction'] == -1:
-            sig_color = "#6b1616"
-        else:
-            sig_color = "#5a4a15"
+        up_pct_5d = round(r.get("confidence_up_5d", 0) * 100)
+        sig5_color = _sig_color(r.get("prediction_5d", 0))
+        sig14_color = _sig_color(r.get("prediction_14d", 0))
         rows += (
             f'<tr style="border-bottom:1px solid #e5e0d9;">'
             f'<td style="padding:8px 10px;color:#aaa;">{i+1}</td>'
             f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{r["ticker"]}</td>'
             f'<td style="padding:8px 10px;color:#333;">{r["current_price"]:.3f}</td>'
-            f'<td style="padding:8px 10px;color:{sig_color};font-weight:700;">{r["signal"]}</td>'
-            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{r["edge_ratio"]:.2f}&times;</td>'
-            f'<td style="padding:8px 10px;color:#333;">{up_pct}%</td>'
+            f'<td style="padding:8px 10px;color:{sig5_color};font-weight:700;">'
+            f'{r.get("signal_5d", "N/A")}</td>'
+            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">'
+            f'{r.get("edge_ratio_5d", 0):.2f}&times;</td>'
+            f'<td style="padding:8px 10px;color:{sig14_color};font-weight:700;">'
+            f'{r.get("signal_14d", "N/A")}</td>'
+            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">'
+            f'{r.get("edge_ratio_14d", 0):.2f}&times;</td>'
+            f'<td style="padding:8px 10px;color:#333;">{up_pct_5d}%</td>'
             f'</tr>'
         )
     th = ("padding:8px 10px;font-size:12px;text-transform:uppercase;"
           "letter-spacing:1px;text-align:left;border-bottom:2px solid #1a1a18;color:#1a1a18;")
     return (
-        f'<table style="width:100%;border-collapse:collapse;font-size:15px;{_MONO}margin:4px 0;">'
+        f'<table style="width:100%;border-collapse:collapse;font-size:14px;{_MONO}margin:4px 0;">'
         f'<thead><tr>'
         f'<th style="{th}">#</th>'
         f'<th style="{th}">TICKER</th>'
         f'<th style="{th}">PRICE</th>'
-        f'<th style="{th}">SIGNAL</th>'
-        f'<th style="{th}">EDGE</th>'
-        f'<th style="{th}">UP CONF</th>'
+        f'<th style="{th}">SIGNAL 5D</th>'
+        f'<th style="{th}">EDGE 5D</th>'
+        f'<th style="{th}">SIGNAL 14D</th>'
+        f'<th style="{th}">EDGE 14D</th>'
+        f'<th style="{th}">UP CONF 5D</th>'
         f'</tr></thead>'
         f'<tbody>{rows}</tbody>'
         f'</table>'
@@ -221,19 +288,31 @@ def _wl_updates(wl: list):
 def analyze(ticker: str, watchlist: list):
     ticker = _normalize_ticker(ticker)
     if not ticker:
-        return (f'<p style="{_ERR_STYLE}">Enter a ticker symbol.</p>',
-                *_wl_updates(watchlist))
-    if model is None:
-        return (f'<p style="{_ERR_STYLE}">Model not loaded.</p>',
-                *_wl_updates(watchlist))
-    r = _build_prediction(ticker)
-    if r is None:
-        return (f'<p style="{_ERR_STYLE}">No data found for {ticker}.</p>',
-                *_wl_updates(watchlist))
-    if ticker not in watchlist:
+        err = f'<p style="{_ERR_STYLE}">Enter a ticker symbol.</p>'
+        return (err, "", *_wl_updates(watchlist))
+
+    html_5d = html_14d = ""
+    r5 = r14 = None
+
+    if model_5d is not None:
+        r5 = _build_prediction(ticker, model_5d, feature_names_5d)
+        html_5d = (_result_html(r5, label="5-DAY FORECAST") if r5
+                   else f'<p style="{_ERR_STYLE}">No data for {ticker} (5D).</p>')
+    else:
+        html_5d = f'<p style="{_ERR_STYLE}">5-day model not loaded.</p>'
+
+    if model_14d is not None:
+        r14 = _build_prediction(ticker, model_14d, feature_names_14d)
+        html_14d = (_result_html(r14, label="14-DAY FORECAST") if r14
+                    else f'<p style="{_ERR_STYLE}">No data for {ticker} (14D).</p>')
+    else:
+        html_14d = f'<p style="{_ERR_STYLE}">14-day model not loaded.</p>'
+
+    if ticker not in watchlist and (r5 is not None or r14 is not None):
         watchlist = watchlist + [ticker]
         _save_watchlist(watchlist)
-    return (_result_html(r), *_wl_updates(watchlist))
+
+    return (html_5d, html_14d, *_wl_updates(watchlist))
 
 
 def add_ticker(ticker: str, watchlist: list):
@@ -284,11 +363,16 @@ def remove_tickers(to_remove: list, watchlist: list):
 def scan_watchlist(watchlist: list) -> str:
     if not watchlist:
         return f'<p style="{_ERR_STYLE}">Watchlist is empty.</p>'
-    if model is None:
-        return f'<p style="{_ERR_STYLE}">Model not loaded.</p>'
+    if model_5d is None and model_14d is None:
+        return f'<p style="{_ERR_STYLE}">No models loaded.</p>'
     with ThreadPoolExecutor(max_workers=8) as ex:
-        results = list(ex.map(_build_prediction, watchlist))
-    top10 = rank_scan_results([r for r in results if r is not None], n=10)
+        results = list(ex.map(_build_dual_prediction, watchlist))
+    valid = [r for r in results if r is not None]
+    top10 = sorted(
+        valid,
+        key=lambda r: (r.get("confidence_up_5d", 0), r.get("edge_ratio_5d", 0)),
+        reverse=True,
+    )[:10]
     return _scan_html(top10)
 
 
