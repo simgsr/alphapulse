@@ -16,6 +16,12 @@ FEATURE_NAMES = [
     'BB_pct_b',
     'Volume_ratio_20',
     'Volatility_20', 'Returns_1d', 'Returns_5d', 'Returns_10d', 'Returns_20d',
+    'Stoch_K', 'Stoch_D',
+    'ATR_ratio',
+    'ADX_14',
+    'OBV_ratio',
+    'CCI_20',
+    'CMF_20',
 ]
 
 

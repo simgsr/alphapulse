@@ -105,7 +105,7 @@ class TestBuildPredictionResponse:
 
 class TestRankScanResults:
     def _make_result(self, ticker, edge_ratio):
-        return {"ticker": ticker, "edge_ratio": edge_ratio, "signal": "STABLE"}
+        return {"ticker": ticker, "edge_ratio": edge_ratio, "signal": "STABLE", "confidence_up_3pct": 0.5}
 
     def test_returns_top_n_by_edge_ratio_descending(self):
         from app import rank_scan_results
