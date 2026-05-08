@@ -1,75 +1,16 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import asyncio
+import csv
+import gradio as gr
 import joblib
+import json
 import os
-import time
-import urllib.request
+import re
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from get_price_data import fetch_latest_data, calculate_technical_indicators
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-SIGNAL_MAP = {
-    1: "UP > 3%",
-    0: "STABLE",
-    -1: "DOWN > 3%",
-}
-
-# Screener watchlist — yfinance format (XXXX.HK / XXXX.SI)
-WATCHLIST = [
-    # Singapore Stocks (.SI)
-    "U96.SI", "HLPD.SI", "H18.SI", "OV8.SI", "EB5.SI", "D05.SI",
-
-    # Hong Kong Stocks (.HK)
-    "1698.HK", "1882.HK", "1997.HK", "2196.HK", "2313.HK", 
-    "2331.HK", "3606.HK", "6110.HK", "6169.HK", "6178.HK", 
-    "6690.HK", "6936.HK", "9899.HK", "9987.HK", "9988.HK", 
-    "9999.HK", "1398.HK", "2525.HK", "0151.HK", "0168.HK", 
-    "0382.HK", "0700.HK", "1513.HK", "2176.HK", "2669.HK", 
-    "3660.HK", "3888.HK", "1171.HK", "1179.HK", "1969.HK", 
-    "2648.HK", "2660.HK", "6826.HK", "9618.HK", "9979.HK", 
-    "9922.HK", "3686.HK", "1876.HK", "1760.HK", "0839.HK", 
-    "3088.HK", "2801.HK", "2839.HK", "3403.HK", "3188.HK", 
-    "2822.HK"
-]
-
-_scan_cache: dict = {"data": None, "ts": 0.0}
-SCAN_TTL = 3600  # seconds
 
 _here = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(_here, 'stock_model.joblib')
-
-# Fallback to /tmp for read-only filesystems (HF Spaces)
-if not os.path.exists(MODEL_PATH):
-    MODEL_PATH = '/tmp/stock_model.joblib'
-
-if not os.path.exists(MODEL_PATH):
-    _hf_repo = os.environ.get('HF_MODEL_REPO')
-    _model_url = os.environ.get('MODEL_URL')
-    if _hf_repo:
-        from huggingface_hub import hf_hub_download
-        print(f"Downloading model from HF Hub: {_hf_repo}", flush=True)
-        MODEL_PATH = hf_hub_download(
-            repo_id=_hf_repo,
-            filename='stock_model.joblib',
-            cache_dir='/tmp/hf_cache',
-            token=os.environ.get('HF_TOKEN'),
-        )
-        print("Model download complete.", flush=True)
-    elif _model_url:
-        print("Downloading model from MODEL_URL…", flush=True)
-        urllib.request.urlretrieve(_model_url, MODEL_PATH)
-        print("Model download complete.", flush=True)
+WATCHLIST_PATH = os.path.join(_here, 'watchlist.json')
 
 try:
     model_data = joblib.load(MODEL_PATH)
@@ -80,9 +21,66 @@ except Exception as e:
     model = None
     feature_names = []
 
+SIGNAL_MAP = {
+    1: "UP > 3%",
+    0: "STABLE",
+    -1: "DOWN > 3%",
+}
+
+DEFAULT_WATCHLIST = [
+    # Singapore
+    "U96.SI", "HLPD.SI", "H18.SI", "OV8.SI", "EB5.SI", "D05.SI",
+    # Hong Kong
+    "1698.HK", "1882.HK", "1997.HK", "2196.HK", "2313.HK",
+    "2331.HK", "3606.HK", "6110.HK", "6169.HK", "6178.HK",
+    "6690.HK", "6936.HK", "9899.HK", "9987.HK", "9988.HK",
+    "9999.HK", "1398.HK", "2525.HK", "0151.HK", "0168.HK",
+    "0382.HK", "0700.HK", "1513.HK", "2176.HK", "2669.HK",
+    "3660.HK", "3888.HK", "1171.HK", "1179.HK", "1969.HK",
+    "2648.HK", "2660.HK", "6826.HK", "9618.HK", "9979.HK",
+    "9922.HK", "3686.HK", "1876.HK", "1760.HK", "0839.HK",
+    "3088.HK", "2801.HK", "2839.HK", "3403.HK", "3188.HK",
+    "2822.HK",
+    # China A-shares
+    "002304.SZ", "000568.SZ", "000858.SZ", "600809.SS",
+]
+
+
+_HK5_RE = re.compile(r'^0(\d{4})(\.HK)$', re.IGNORECASE)
+
+
+def _normalize_ticker(raw: str) -> str:
+    """Upper-case and strip leading zero from 5-digit HK codes.
+
+    yfinance uses 4-digit HK codes: '01698.HK' → '1698.HK',
+    '09999.HK' → '9999.HK', while '0700.HK' (already 4-digit) is unchanged.
+    """
+    t = raw.strip().upper()
+    m = _HK5_RE.match(t)
+    return m.group(1) + m.group(2).upper() if m else t
+
+
+def _load_watchlist() -> list:
+    if os.path.exists(WATCHLIST_PATH):
+        try:
+            with open(WATCHLIST_PATH) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return DEFAULT_WATCHLIST.copy()
+
+
+def _save_watchlist(watchlist: list) -> None:
+    try:
+        with open(WATCHLIST_PATH, 'w') as f:
+            json.dump(watchlist, f)
+    except Exception as e:
+        print(f"Failed to save watchlist: {e}")
+
+
+# ── Pure inference helpers (kept for test compatibility) ─────────────────────
 
 def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_data) -> dict:
-    """Pure function: run inference and build the API response dict."""
     prediction = int(mdl.predict(features_array)[0])
     probabilities = mdl.predict_proba(features_array)[0].tolist()
     classes = mdl.classes_.tolist()
@@ -90,7 +88,6 @@ def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_
 
     confidence_up_3pct = round(prob_dict.get('1', 0.0), 4)
     confidence_down_3pct = round(prob_dict.get('-1', 0.0), 4)
-
     p_down = confidence_down_3pct
     edge_ratio = round(confidence_up_3pct / p_down, 2) if p_down > 0 else 99.0
 
@@ -108,65 +105,452 @@ def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_
 
 
 def rank_scan_results(results: list, n: int = 5) -> list:
-    """Return top-n results sorted by edge_ratio descending."""
-    return sorted(results, key=lambda r: r["edge_ratio"], reverse=True)[:n]
+    return sorted(results, key=lambda r: (r["confidence_up_3pct"], r["edge_ratio"]), reverse=True)[:n]
 
 
-@app.get("/predict/{ticker}")
-async def predict(ticker: str):
-    ticker = ticker.upper()
-    if model is None:
-        raise HTTPException(status_code=500, detail="Model not loaded on server")
+# ── Data + prediction pipeline ───────────────────────────────────────────────
 
-    data = fetch_latest_data(ticker)
-    if data is None:
-        raise HTTPException(status_code=404, detail=f"No data found for {ticker}")
-
-    processed = calculate_technical_indicators(data)
-    if processed.empty:
-        raise HTTPException(status_code=400, detail="Insufficient data for analysis")
-
-    latest_features = processed[feature_names].iloc[-1:].values
-    return build_prediction_response(ticker, model, latest_features, data)
-
-
-_scan_sem = asyncio.Semaphore(8)
-
-
-async def _fetch_and_predict(ticker: str) -> dict | None:
-    async with _scan_sem:
-        try:
-            data = await asyncio.to_thread(fetch_latest_data, ticker)
-            if data is None:
-                return None
-            processed = await asyncio.to_thread(calculate_technical_indicators, data)
-            if processed.empty:
-                return None
-            latest_features = processed[feature_names].iloc[-1:].values
-            return build_prediction_response(ticker, model, latest_features, data)
-        except Exception:
+def _build_prediction(ticker: str) -> dict | None:
+    try:
+        data = fetch_latest_data(ticker)
+        if data is None:
             return None
+        processed = calculate_technical_indicators(data)
+        if processed.empty:
+            return None
+        latest = processed[feature_names].iloc[-1:].values
+        return build_prediction_response(ticker, model, latest, data)
+    except Exception as e:
+        print(f"Prediction error for {ticker}: {e}")
+        return None
 
 
-@app.get("/scan")
-async def scan():
-    global _scan_cache
-    if _scan_cache["data"] is not None and (time.time() - _scan_cache["ts"]) < SCAN_TTL:
-        return _scan_cache["data"]
+# ── HTML renderers ────────────────────────────────────────────────────────────
 
+_MONO = "font-family:'Source Code Pro',monospace;"
+_ERR_STYLE = f"color:#6b1616;font-size:15px;{_MONO}"
+
+
+
+def _result_html(r: dict) -> str:
+    up_pct = round(r['confidence_up_3pct'] * 100)
+    dn_pct = round(r['confidence_down_3pct'] * 100)
+    if r['prediction'] == 1:
+        sig_color = "#1e4d17"
+    elif r['prediction'] == -1:
+        sig_color = "#6b1616"
+    else:
+        sig_color = "#5a4a15"
+    return f"""
+<div style="border:1px solid #b8b2aa;padding:18px 20px;background:#faf8f4;{_MONO}margin:4px 0;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;
+              border-bottom:1px solid #d0cac2;padding-bottom:12px;margin-bottom:14px;">
+    <div>
+      <div style="font-size:24px;font-weight:700;letter-spacing:1px;color:#1a1a18;">{r['ticker']}</div>
+      <div style="font-size:16px;color:#555;margin-top:3px;">{r['current_price']:.3f}</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="color:{sig_color};font-weight:700;font-size:16px;letter-spacing:1px;">{r['signal']}</div>
+      <div style="font-size:13px;color:#888;margin-top:3px;">EDGE {r['edge_ratio']:.2f}&times;</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:15px;">
+    <span style="width:180px;color:#555;flex-shrink:0;">UP &gt;3% in 7 days</span>
+    <div style="flex:1;height:9px;background:#e5e0d9;border:1px solid #c8c2ba;">
+      <div style="width:{up_pct}%;height:100%;background:#1e4d17;"></div>
+    </div>
+    <span style="width:42px;text-align:right;font-weight:700;color:#1a1a18;">{up_pct}%</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;font-size:15px;">
+    <span style="width:180px;color:#555;flex-shrink:0;">DOWN &gt;3% in 7 days</span>
+    <div style="flex:1;height:9px;background:#e5e0d9;border:1px solid #c8c2ba;">
+      <div style="width:{dn_pct}%;height:100%;background:#6b1616;"></div>
+    </div>
+    <span style="width:42px;text-align:right;font-weight:700;color:#1a1a18;">{dn_pct}%</span>
+  </div>
+  <div style="font-size:12px;color:#aaa;text-align:right;margin-top:12px;
+              border-top:1px solid #e5e0d9;padding-top:8px;">DATA AS OF {r['last_updated']}</div>
+</div>"""
+
+
+def _scan_html(results: list) -> str:
+    if not results:
+        return f'<p style="{_ERR_STYLE}">No data available for any ticker in your watchlist.</p>'
+    rows = ""
+    for i, r in enumerate(results):
+        up_pct = round(r['confidence_up_3pct'] * 100)
+        if r['prediction'] == 1:
+            sig_color = "#1e4d17"
+        elif r['prediction'] == -1:
+            sig_color = "#6b1616"
+        else:
+            sig_color = "#5a4a15"
+        rows += (
+            f'<tr style="border-bottom:1px solid #e5e0d9;">'
+            f'<td style="padding:8px 10px;color:#aaa;">{i+1}</td>'
+            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{r["ticker"]}</td>'
+            f'<td style="padding:8px 10px;color:#333;">{r["current_price"]:.3f}</td>'
+            f'<td style="padding:8px 10px;color:{sig_color};font-weight:700;">{r["signal"]}</td>'
+            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{r["edge_ratio"]:.2f}&times;</td>'
+            f'<td style="padding:8px 10px;color:#333;">{up_pct}%</td>'
+            f'</tr>'
+        )
+    th = ("padding:8px 10px;font-size:12px;text-transform:uppercase;"
+          "letter-spacing:1px;text-align:left;border-bottom:2px solid #1a1a18;color:#1a1a18;")
+    return (
+        f'<table style="width:100%;border-collapse:collapse;font-size:15px;{_MONO}margin:4px 0;">'
+        f'<thead><tr>'
+        f'<th style="{th}">#</th>'
+        f'<th style="{th}">TICKER</th>'
+        f'<th style="{th}">PRICE</th>'
+        f'<th style="{th}">SIGNAL</th>'
+        f'<th style="{th}">EDGE</th>'
+        f'<th style="{th}">UP CONF</th>'
+        f'</tr></thead>'
+        f'<tbody>{rows}</tbody>'
+        f'</table>'
+    )
+
+
+# ── Gradio action handlers ────────────────────────────────────────────────────
+
+def _wl_updates(wl: list):
+    return wl, gr.update(choices=wl, value=[])
+
+
+def analyze(ticker: str, watchlist: list):
+    ticker = _normalize_ticker(ticker)
+    if not ticker:
+        return (f'<p style="{_ERR_STYLE}">Enter a ticker symbol.</p>',
+                *_wl_updates(watchlist))
     if model is None:
-        raise HTTPException(status_code=500, detail="Model not loaded on server")
+        return (f'<p style="{_ERR_STYLE}">Model not loaded.</p>',
+                *_wl_updates(watchlist))
+    r = _build_prediction(ticker)
+    if r is None:
+        return (f'<p style="{_ERR_STYLE}">No data found for {ticker}.</p>',
+                *_wl_updates(watchlist))
+    if ticker not in watchlist:
+        watchlist = watchlist + [ticker]
+        _save_watchlist(watchlist)
+    return (_result_html(r), *_wl_updates(watchlist))
 
-    results_raw = await asyncio.gather(*[_fetch_and_predict(t) for t in WATCHLIST])
-    results = [r for r in results_raw if r is not None]
-    top5 = rank_scan_results(results, n=5)
-    _scan_cache = {"data": top5, "ts": time.time()}
-    return top5
+
+def add_ticker(ticker: str, watchlist: list):
+    ticker = _normalize_ticker(ticker)
+    if ticker and ticker not in watchlist:
+        watchlist = watchlist + [ticker]
+        _save_watchlist(watchlist)
+    return ("", *_wl_updates(watchlist))
 
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+def import_csv(file, watchlist: list):
+    if file is None:
+        return ("", *_wl_updates(watchlist))
+    try:
+        filepath = file.path if hasattr(file, 'path') else file
+        header_kw = ['ticker', 'symbol', 'code', 'stock', 'instrument']
+        new_tickers = []
+        with open(filepath, newline='', encoding='utf-8-sig') as f:
+            rows = list(csv.reader(f))
+        if not rows:
+            return ("", *_wl_updates(watchlist))
+        # Detect header row and ticker column
+        start_row, ticker_col = 0, 0
+        first_row_lower = [c.strip().lower().strip('"\'') for c in rows[0]]
+        for i, cell in enumerate(first_row_lower):
+            if any(kw in cell for kw in header_kw):
+                start_row, ticker_col = 1, i
+                break
+        for row in rows[start_row:]:
+            if len(row) > ticker_col:
+                t = _normalize_ticker(row[ticker_col].strip('"\''))
+                if t and t not in watchlist and t not in new_tickers:
+                    new_tickers.append(t)
+        watchlist = watchlist + new_tickers
+        _save_watchlist(watchlist)
+    except Exception as e:
+        print(f"CSV import error: {e}")
+    return ("", *_wl_updates(watchlist))
+
+
+def remove_tickers(to_remove: list, watchlist: list):
+    if to_remove:
+        watchlist = [t for t in watchlist if t not in to_remove]
+        _save_watchlist(watchlist)
+    return _wl_updates(watchlist)
+
+
+def scan_watchlist(watchlist: list) -> str:
+    if not watchlist:
+        return f'<p style="{_ERR_STYLE}">Watchlist is empty.</p>'
+    if model is None:
+        return f'<p style="{_ERR_STYLE}">Model not loaded.</p>'
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(_build_prediction, watchlist))
+    top10 = rank_scan_results([r for r in results if r is not None], n=10)
+    return _scan_html(top10)
+
+
+# ── Theme ─────────────────────────────────────────────────────────────────────
+
+theme = gr.themes.Base(
+    primary_hue=gr.themes.colors.stone,
+    secondary_hue=gr.themes.colors.stone,
+    neutral_hue=gr.themes.colors.stone,
+    font=gr.themes.GoogleFont("Source Code Pro"),
+    text_size=gr.themes.sizes.text_lg,
+    radius_size=gr.themes.sizes.radius_none,
+).set(
+    body_background_fill="#f4f1ec",
+    body_text_color="#1a1a18",
+    button_primary_background_fill="#1a1a18",
+    button_primary_text_color="#f4f1ec",
+    button_primary_background_fill_hover="#333",
+    button_primary_border_color="#1a1a18",
+    button_secondary_background_fill="#eae6e0",
+    button_secondary_text_color="#1a1a18",
+    button_secondary_border_color="#a8a49e",
+    block_background_fill="#f4f1ec",
+    block_border_color="#c8c0b8",
+    block_border_width="0px",
+    input_background_fill="#ffffff",
+    input_border_color="#b8b2aa",
+    input_border_color_focus="#1a1a18",
+)
+
+CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro:ital,wght@0,400;0,500;0,600;0,700&display=swap');
+
+/* ── Page & universal font ── */
+html { background: #f4f1ec !important; }
+body { background: #f4f1ec !important; color: #1a1a18 !important; }
+*, *::before, *::after { font-family: 'Source Code Pro', monospace !important; }
+
+/* ── Container ── */
+.gradio-container {
+    max-width: 700px !important;
+    padding: 0 28px 60px !important;
+    background: #f4f1ec !important;
+}
+footer, .show-api { display: none !important; }
+
+/* ── Inputs ── */
+input[type="text"], input[type="search"], textarea {
+    color: #1a1a18 !important;
+    background: #ffffff !important;
+    border: 1.5px solid #b0aaa4 !important;
+    font-size: 16px !important;
+    padding: 0 12px !important;
+}
+input[type="text"]:focus, input[type="search"]:focus {
+    border-color: #1a1a18 !important;
+    box-shadow: none !important;
+    outline: none !important;
+}
+input::placeholder, textarea::placeholder {
+    color: #b0aaa4 !important;
+    font-size: 15px !important;
+    opacity: 1 !important;
+}
+
+/* ── Buttons ── */
+button {
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.8px !important;
+    transition: opacity 0.15s !important;
+}
+button:active { opacity: 0.75 !important; }
+
+/* ── Block labels (Gradio auto-labels) ── */
+.label-wrap span, label > span:first-child {
+    font-size: 11px !important;
+    color: #aaa !important;
+    letter-spacing: 1.5px !important;
+    text-transform: uppercase !important;
+    font-weight: 600 !important;
+}
+
+/* ── Section headers ── */
+.sec-label {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #888;
+    border-bottom: 1.5px solid #1a1a18;
+    padding-bottom: 6px;
+    margin-bottom: 12px;
+}
+.sub-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #aaa;
+    margin: 14px 0 5px;
+}
+
+/* ── CheckboxGroup — watchlist ── */
+#wl-rm {
+    background: #ffffff !important;
+    border: 1.5px solid #b0aaa4 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+#wl-rm .wrap, #wl-rm .form {
+    background: #ffffff !important;
+    max-height: 280px !important;
+    overflow-y: auto !important;
+    padding: 10px 14px !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+#wl-rm fieldset {
+    background: #ffffff !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+}
+#wl-rm label {
+    background: #ffffff !important;
+    color: #1a1a18 !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    padding: 4px 18px 4px 4px !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
+    white-space: nowrap !important;
+}
+#wl-rm label:hover { background: #f0ede7 !important; }
+#wl-rm input[type="checkbox"] {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+    accent-color: #1a1a18 !important;
+    flex-shrink: 0 !important;
+}
+#wl-rm .label-wrap { display: none !important; }
+"""
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+
+INITIAL_WATCHLIST = _load_watchlist()
+
+with gr.Blocks(title="AlphaPulse") as demo:
+    watchlist_state = gr.State(INITIAL_WATCHLIST)
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    gr.HTML("""
+    <div style="text-align:center;padding:28px 0 16px;border-bottom:2px solid #1a1a18;margin-bottom:20px;">
+      <div style="font-size:26px;font-weight:700;letter-spacing:4px;color:#1a1a18;
+                  font-family:'Source Code Pro',monospace;">ALPHAPULSE</div>
+      <div style="font-size:10px;letter-spacing:4px;text-transform:uppercase;color:#888;
+                  margin-top:5px;font-family:'Source Code Pro',monospace;">STOCK FORECAST AI</div>
+    </div>
+    """)
+
+    # ── Analyze ───────────────────────────────────────────────────────────────
+    gr.HTML('<div class="sec-label">── ANALYZE ──</div>')
+    with gr.Row():
+        ticker_in = gr.Textbox(
+            placeholder="e.g. 0700.HK or AAPL",
+            show_label=False,
+            scale=4,
+        )
+        analyze_btn = gr.Button("ANALYZE", variant="primary", scale=1)
+    result_out = gr.HTML(value="")
+
+    # ── Watchlist ─────────────────────────────────────────────────────────────
+    gr.HTML('<div class="sec-label" style="margin-top:18px;">── WATCHLIST ──</div>')
+    remove_cg = gr.CheckboxGroup(
+        choices=INITIAL_WATCHLIST,
+        label="",
+        value=[],
+        elem_id="wl-rm",
+    )
+    with gr.Row():
+        remove_btn = gr.Button("REMOVE SELECTED", variant="secondary", scale=1)
+        gr.HTML('<div></div>', visible=True)
+
+    # ── Add tickers ───────────────────────────────────────────────────────────
+    gr.HTML('<div class="sub-label">ADD TICKERS</div>')
+    with gr.Row():
+        add_in = gr.Textbox(
+            placeholder="e.g. 0700.HK",
+            show_label=False,
+            scale=3,
+        )
+        add_btn = gr.Button("ADD", scale=1)
+        csv_btn = gr.UploadButton(
+            "IMPORT CSV",
+            file_types=[".csv"],
+            scale=1,
+        )
+
+    # ── Scan ──────────────────────────────────────────────────────────────────
+    gr.HTML('<div class="sec-label" style="margin-top:18px;">── SCAN ──</div>')
+    scan_btn = gr.Button("SCAN WATCHLIST", variant="primary")
+    scan_out = gr.HTML(value="")
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    gr.HTML(
+        '<p style="font-size:10px;color:#bbb;text-align:center;margin-top:20px;'
+        "letter-spacing:1px;font-family:'Source Code Pro',monospace;\">"
+        "NOT FINANCIAL ADVICE · BASED ON HISTORICAL PATTERNS ONLY</p>"
+    )
+
+    # ── Wiring ────────────────────────────────────────────────────────────────
+    _wl_outs = [watchlist_state, remove_cg]
+
+    analyze_btn.click(
+        fn=analyze,
+        inputs=[ticker_in, watchlist_state],
+        outputs=[result_out] + _wl_outs,
+    )
+    ticker_in.submit(
+        fn=analyze,
+        inputs=[ticker_in, watchlist_state],
+        outputs=[result_out] + _wl_outs,
+    )
+    add_btn.click(
+        fn=add_ticker,
+        inputs=[add_in, watchlist_state],
+        outputs=[add_in] + _wl_outs,
+    )
+    add_in.submit(
+        fn=add_ticker,
+        inputs=[add_in, watchlist_state],
+        outputs=[add_in] + _wl_outs,
+    )
+    csv_btn.upload(
+        fn=import_csv,
+        inputs=[csv_btn, watchlist_state],
+        outputs=[add_in] + _wl_outs,
+    )
+    remove_btn.click(
+        fn=remove_tickers,
+        inputs=[remove_cg, watchlist_state],
+        outputs=_wl_outs,
+    )
+    scan_btn.click(
+        fn=scan_watchlist,
+        inputs=[watchlist_state],
+        outputs=[scan_out],
+    )
+
 
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 7860))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    demo.launch(server_port=7860, theme=theme, css=CSS)

@@ -1,12 +1,8 @@
-fastapi
-uvicorn
+gradio>=5.0.0
 yfinance>=0.2.0
 pandas>=2.0.0
 numpy>=1.24.0
 scikit-learn>=1.3.0
 joblib>=1.3.0
 lightgbm>=4.0.0
-huggingface_hub>=0.23.0
-python-multipart
 pytest>=7.0.0
-httpx>=0.24.0
