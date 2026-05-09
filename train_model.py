@@ -24,6 +24,18 @@ FEATURE_NAMES = [
     'CMF_20',
 ]
 
+RANK_FEATURE_NAMES = [f'{f}_rank' for f in FEATURE_NAMES]
+ALL_FEATURE_NAMES = FEATURE_NAMES + RANK_FEATURE_NAMES
+
+
+def _ticker_exchange(ticker: str) -> str:
+    t = ticker.upper()
+    if t.endswith('.HK'):
+        return 'HK'
+    if t.endswith('.SI'):
+        return 'SGX'
+    return 'ALL'
+
 
 def binarize_return(r: float, thresh: float = 0.03) -> int:
     """Map a forward return to a binary label.
@@ -55,6 +67,7 @@ def build_ticker_dataset(
         return None
     df = calculate_technical_indicators(raw)
     df = df.copy()
+    df['exchange'] = _ticker_exchange(ticker)
     df['forward_return'] = df['Adj_Close'].shift(-horizon) / df['Adj_Close'] - 1
     df = df.dropna(subset=['forward_return'])
     df['forward_return'] = df['forward_return'].clip(-clip, clip)

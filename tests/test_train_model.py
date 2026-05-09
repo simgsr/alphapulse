@@ -262,3 +262,48 @@ class TestBuildFullDatasetSGX:
             (X_train, _), _ = build_full_dataset(str(hk_csv))
 
         assert len(X_train) > 0
+
+
+class TestTickerExchange:
+    def test_hk_suffix_returns_hk(self):
+        from train_model import _ticker_exchange
+        assert _ticker_exchange("0001.HK") == "HK"
+
+    def test_si_suffix_returns_sgx(self):
+        from train_model import _ticker_exchange
+        assert _ticker_exchange("D05.SI") == "SGX"
+
+    def test_unknown_suffix_returns_all(self):
+        from train_model import _ticker_exchange
+        assert _ticker_exchange("AAPL") == "ALL"
+
+    def test_case_insensitive(self):
+        from train_model import _ticker_exchange
+        assert _ticker_exchange("0001.hk") == "HK"
+
+
+class TestBuildTickerDatasetExchange:
+    def test_hk_ticker_adds_exchange_column(self):
+        long_df = _make_synthetic_df(400)
+        with patch("train_model.fetch_latest_data", return_value=long_df), \
+             patch("train_model.calculate_technical_indicators", return_value=long_df):
+            from train_model import build_ticker_dataset
+            result = build_ticker_dataset("0001.HK")
+        assert "exchange" in result.columns
+        assert (result["exchange"] == "HK").all()
+
+    def test_si_ticker_exchange_is_sgx(self):
+        long_df = _make_synthetic_df(400)
+        with patch("train_model.fetch_latest_data", return_value=long_df), \
+             patch("train_model.calculate_technical_indicators", return_value=long_df):
+            from train_model import build_ticker_dataset
+            result = build_ticker_dataset("D05.SI")
+        assert (result["exchange"] == "SGX").all()
+
+    def test_unknown_ticker_exchange_is_all(self):
+        long_df = _make_synthetic_df(400)
+        with patch("train_model.fetch_latest_data", return_value=long_df), \
+             patch("train_model.calculate_technical_indicators", return_value=long_df):
+            from train_model import build_ticker_dataset
+            result = build_ticker_dataset("AAPL")
+        assert (result["exchange"] == "ALL").all()
