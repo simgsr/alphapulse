@@ -80,6 +80,8 @@ Unchanged from current values: `n_estimators=500`, `num_leaves=95`, `learning_ra
 ### Inference threshold
 Default: argmax (`UP_prob > 0.5`). A config constant `UP_THRESHOLD` (default `0.5`) at the top of `app.py` allows manual override without touching model files. The precision/recall table printed at training time guides selection.
 
+With a binary model P(UP) + P(NOT-UP) = 1, so probability mass is no longer split across three classes. The interesting operating range shifts up: the sweep in `train_model.py` covers **0.50 → 0.80** (step 0.05) instead of the previous 0.30 → 0.60.
+
 ### Analyze tab result cards
 - **Signal:** `UP >3%` or `NO SIGNAL`
 - **UP probability bar:** unchanged
