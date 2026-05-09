@@ -27,10 +27,11 @@ model_5d, feature_names_5d = _load_model(MODEL_5D_PATH)
 model_14d, feature_names_14d = _load_model(MODEL_14D_PATH)
 
 SIGNAL_MAP = {
-    1: "UP > 3%",
-    0: "STABLE",
-    -1: "DOWN > 3%",
+    1: "UP >3%",
+    0: "NO SIGNAL",
 }
+
+UP_THRESHOLD = 0.5
 
 DEFAULT_WATCHLIST = [
     # Singapore
@@ -92,16 +93,13 @@ def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_
     prob_dict = {str(int(c)): round(p, 4) for c, p in zip(classes, probabilities)}
 
     confidence_up_3pct = round(prob_dict.get('1', 0.0), 4)
-    confidence_down_3pct = round(prob_dict.get('-1', 0.0), 4)
-    p_down = confidence_down_3pct
-    edge_ratio = round(confidence_up_3pct / p_down, 2) if p_down > 0 else 99.0
+    edge_ratio = round(confidence_up_3pct / UP_THRESHOLD, 2)
 
     return {
         "ticker": ticker,
         "prediction": prediction,
-        "signal": SIGNAL_MAP.get(prediction, "UNKNOWN"),
+        "signal": SIGNAL_MAP.get(prediction, "NO SIGNAL"),
         "confidence_up_3pct": confidence_up_3pct,
-        "confidence_down_3pct": confidence_down_3pct,
         "edge_ratio": edge_ratio,
         "probabilities": prob_dict,
         "current_price": float(raw_data['Adj_Close'].iloc[-1]),
@@ -151,7 +149,6 @@ def _build_dual_prediction(ticker: str) -> dict | None:
             result.update({
                 "signal_5d": r5["signal"],
                 "confidence_up_5d": r5["confidence_up_3pct"],
-                "confidence_down_5d": r5["confidence_down_3pct"],
                 "edge_ratio_5d": r5["edge_ratio"],
                 "prediction_5d": r5["prediction"],
             })
@@ -162,7 +159,6 @@ def _build_dual_prediction(ticker: str) -> dict | None:
             result.update({
                 "signal_14d": r14["signal"],
                 "confidence_up_14d": r14["confidence_up_3pct"],
-                "confidence_down_14d": r14["confidence_down_3pct"],
                 "edge_ratio_14d": r14["edge_ratio"],
                 "prediction_14d": r14["prediction"],
             })
@@ -182,13 +178,7 @@ _ERR_STYLE = f"color:#6b1616;font-size:15px;{_MONO}"
 
 def _result_html(r: dict, label: str = "") -> str:
     up_pct = round(r['confidence_up_3pct'] * 100)
-    dn_pct = round(r['confidence_down_3pct'] * 100)
-    if r['prediction'] == 1:
-        sig_color = "#1e4d17"
-    elif r['prediction'] == -1:
-        sig_color = "#6b1616"
-    else:
-        sig_color = "#5a4a15"
+    sig_color = "#1e4d17" if r['prediction'] == 1 else "#5a4a15"
     label_html = (
         f'<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;'
         f'color:#888;margin-bottom:4px;">{label}</div>'
@@ -209,19 +199,12 @@ def _result_html(r: dict, label: str = "") -> str:
       <div style="font-size:13px;color:#888;margin-top:3px;">EDGE {r['edge_ratio']:.2f}&times;</div>
     </div>
   </div>
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:15px;">
+  <div style="display:flex;align-items:center;gap:10px;font-size:15px;">
     <span style="width:180px;color:#555;flex-shrink:0;">UP &gt;3% in {horizon} days</span>
     <div style="flex:1;height:9px;background:#e5e0d9;border:1px solid #c8c2ba;">
       <div style="width:{up_pct}%;height:100%;background:#1e4d17;"></div>
     </div>
     <span style="width:42px;text-align:right;font-weight:700;color:#1a1a18;">{up_pct}%</span>
-  </div>
-  <div style="display:flex;align-items:center;gap:10px;font-size:15px;">
-    <span style="width:180px;color:#555;flex-shrink:0;">DOWN &gt;3% in {horizon} days</span>
-    <div style="flex:1;height:9px;background:#e5e0d9;border:1px solid #c8c2ba;">
-      <div style="width:{dn_pct}%;height:100%;background:#6b1616;"></div>
-    </div>
-    <span style="width:42px;text-align:right;font-weight:700;color:#1a1a18;">{dn_pct}%</span>
   </div>
   <div style="font-size:12px;color:#aaa;text-align:right;margin-top:12px;
               border-top:1px solid #e5e0d9;padding-top:8px;">DATA AS OF {r['last_updated']}</div>
@@ -232,18 +215,12 @@ def _scan_html(results: list) -> str:
     if not results:
         return f'<p style="{_ERR_STYLE}">No data available for any ticker in your watchlist.</p>'
 
-    def _sig_color(pred):
-        if pred == 1:
-            return "#1e4d17"
-        elif pred == -1:
-            return "#6b1616"
-        return "#5a4a15"
-
     rows = ""
     for i, r in enumerate(results):
-        up_pct_5d = round(r.get("confidence_up_5d", 0) * 100)
-        sig5_color = _sig_color(r.get("prediction_5d", 0))
-        sig14_color = _sig_color(r.get("prediction_14d", 0))
+        up_5d = round(r.get("confidence_up_5d", 0) * 100)
+        up_14d = round(r.get("confidence_up_14d", 0) * 100)
+        sig5_color = "#1e4d17" if r.get("prediction_5d") == 1 else "#5a4a15"
+        sig14_color = "#1e4d17" if r.get("prediction_14d") == 1 else "#5a4a15"
         rows += (
             f'<tr style="border-bottom:1px solid #e5e0d9;">'
             f'<td style="padding:8px 10px;color:#aaa;">{i+1}</td>'
@@ -251,13 +228,10 @@ def _scan_html(results: list) -> str:
             f'<td style="padding:8px 10px;color:#333;">{r["current_price"]:.3f}</td>'
             f'<td style="padding:8px 10px;color:{sig5_color};font-weight:700;">'
             f'{r.get("signal_5d", "N/A")}</td>'
-            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">'
-            f'{r.get("edge_ratio_5d", 0):.2f}&times;</td>'
+            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{up_5d}%</td>'
             f'<td style="padding:8px 10px;color:{sig14_color};font-weight:700;">'
             f'{r.get("signal_14d", "N/A")}</td>'
-            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">'
-            f'{r.get("edge_ratio_14d", 0):.2f}&times;</td>'
-            f'<td style="padding:8px 10px;color:#333;">{up_pct_5d}%</td>'
+            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{up_14d}%</td>'
             f'</tr>'
         )
     th = ("padding:8px 10px;font-size:12px;text-transform:uppercase;"
@@ -269,10 +243,9 @@ def _scan_html(results: list) -> str:
         f'<th style="{th}">TICKER</th>'
         f'<th style="{th}">PRICE</th>'
         f'<th style="{th}">SIGNAL 5D</th>'
-        f'<th style="{th}">EDGE 5D</th>'
-        f'<th style="{th}">SIGNAL 14D</th>'
-        f'<th style="{th}">EDGE 14D</th>'
         f'<th style="{th}">UP CONF 5D</th>'
+        f'<th style="{th}">SIGNAL 14D</th>'
+        f'<th style="{th}">UP CONF 14D</th>'
         f'</tr></thead>'
         f'<tbody>{rows}</tbody>'
         f'</table>'
