@@ -8,8 +8,16 @@ def _make_df(n=200):
     idx = pd.date_range("2020-01-01", periods=n, freq="B")
     np.random.seed(1)
     prices = 100.0 * np.cumprod(1 + np.random.normal(0, 0.01, n))
+    highs = prices * 1.01
+    lows = prices * 0.99
     return pd.DataFrame(
-        {"Adj_Close": prices, "Adj_Volume": np.full(n, 1_000_000.0)},
+        {
+            "Adj_Open": prices * 0.999,
+            "Adj_High": highs,
+            "Adj_Low": lows,
+            "Adj_Close": prices,
+            "Adj_Volume": np.full(n, 1_000_000.0),
+        },
         index=idx,
     )
 
@@ -68,7 +76,13 @@ def test_sma_50_ratio_near_one_for_flat_price():
     n = 200
     idx = pd.date_range("2020-01-01", periods=n, freq="B")
     flat = pd.DataFrame(
-        {"Adj_Close": np.full(n, 100.0), "Adj_Volume": np.full(n, 1_000_000.0)},
+        {
+            "Adj_Open": np.full(n, 100.0),
+            "Adj_High": np.full(n, 100.0),
+            "Adj_Low": np.full(n, 100.0),
+            "Adj_Close": np.full(n, 100.0),
+            "Adj_Volume": np.full(n, 1_000_000.0),
+        },
         index=idx,
     )
     df = calculate_technical_indicators(flat)

@@ -5,7 +5,7 @@ import numpy as np
 def fetch_latest_data(ticker, period="120d"):
     """
     Fetch the latest historical data for a ticker.
-    Returns a cleaned DataFrame suitable for feature engineering.
+    Returns a cleaned DataFrame with OHLCV columns suitable for feature engineering.
     120d (~84 trading days) ensures SMA_50 is computable.
     """
     try:
@@ -17,8 +17,8 @@ def fetch_latest_data(ticker, period="120d"):
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
-        data = data[['Close', 'Volume']].copy()
-        data.columns = ['Adj_Close', 'Adj_Volume']
+        data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        data.columns = ['Adj_Open', 'Adj_High', 'Adj_Low', 'Adj_Close', 'Adj_Volume']
 
         return data
     except Exception as e:
@@ -70,15 +70,18 @@ def calculate_technical_indicators(df):
     df['Returns_10d'] = df['Adj_Close'].pct_change(10)
     df['Returns_20d'] = df['Adj_Close'].pct_change(20)
 
-    # Stochastic %K/%D (14-day, close-based approximation)
-    low_14 = df['Adj_Close'].rolling(window=14).min()
-    high_14 = df['Adj_Close'].rolling(window=14).max()
+    # Stochastic %K/%D (14-day, actual High/Low rolling range)
+    low_14 = df['Adj_Low'].rolling(window=14).min()
+    high_14 = df['Adj_High'].rolling(window=14).max()
     range_14 = (high_14 - low_14).replace(0, np.nan)
     df['Stoch_K'] = ((df['Adj_Close'] - low_14) / range_14 * 100).fillna(50)
     df['Stoch_D'] = df['Stoch_K'].rolling(window=3).mean()
 
-    # ATR ratio (14-day, close-based simplified True Range)
-    tr = df['Adj_Close'].diff().abs()
+    # ATR ratio (14-day, True Range using actual High/Low)
+    hl = df['Adj_High'] - df['Adj_Low']
+    hc = (df['Adj_High'] - df['Adj_Close'].shift(1)).abs()
+    lc = (df['Adj_Low'] - df['Adj_Close'].shift(1)).abs()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     atr_14 = tr.rolling(window=14).mean()
     df['ATR_ratio'] = (atr_14 / df['Adj_Close'].replace(0, np.nan)).fillna(0)
 
