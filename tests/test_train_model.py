@@ -3,53 +3,37 @@ import os
 import pandas as pd
 from unittest.mock import patch
 import pytest
-from train_model import discretize_return, load_tickers, FEATURE_NAMES as _NEW_FEATURES
+from train_model import binarize_return, load_tickers, FEATURE_NAMES as _NEW_FEATURES
 
 
-class TestDiscretizeReturn:
-    def test_up_large(self):
-        assert discretize_return(0.06) == 1
+class TestBinarizeReturn:
+    def test_up_above_thresh(self):
+        from train_model import binarize_return
+        assert binarize_return(0.04) == 1
 
-    def test_up_small(self):
-        assert discretize_return(0.04) == 1
+    def test_up_just_above_thresh(self):
+        from train_model import binarize_return
+        assert binarize_return(0.031) == 1
 
-    def test_exact_3pct_is_stable(self):
-        # boundary: +3% is the top of STABLE
-        assert discretize_return(0.03) == 0
+    def test_exact_thresh_is_not_up(self):
+        from train_model import binarize_return
+        assert binarize_return(0.03) == 0
 
-    def test_stable_zero(self):
-        assert discretize_return(0.0) == 0
+    def test_zero_is_not_up(self):
+        from train_model import binarize_return
+        assert binarize_return(0.0) == 0
 
-    def test_stable_small_positive(self):
-        assert discretize_return(0.02) == 0
+    def test_negative_is_not_up(self):
+        from train_model import binarize_return
+        assert binarize_return(-0.05) == 0
 
-    def test_stable_small_negative(self):
-        assert discretize_return(-0.02) == 0
+    def test_custom_thresh_up(self):
+        from train_model import binarize_return
+        assert binarize_return(0.021, thresh=0.02) == 1
 
-    def test_exact_neg_3pct_is_stable(self):
-        # boundary: -3% is the bottom of STABLE
-        assert discretize_return(-0.03) == 0
-
-    def test_down_small(self):
-        assert discretize_return(-0.04) == -1
-
-    def test_down_large(self):
-        assert discretize_return(-0.06) == -1
-
-    def test_custom_up_thresh(self):
-        assert discretize_return(0.025, up_thresh=0.02, down_thresh=0.02) == 1
-
-    def test_custom_down_thresh(self):
-        assert discretize_return(-0.025, up_thresh=0.02, down_thresh=0.02) == -1
-
-    def test_stable_within_custom_thresholds(self):
-        assert discretize_return(0.015, up_thresh=0.02, down_thresh=0.02) == 0
-
-    def test_14d_up_thresh(self):
-        assert discretize_return(0.04, up_thresh=0.05, down_thresh=0.05) == 0
-
-    def test_14d_down_thresh(self):
-        assert discretize_return(-0.06, up_thresh=0.05, down_thresh=0.05) == -1
+    def test_custom_thresh_boundary(self):
+        from train_model import binarize_return
+        assert binarize_return(0.02, thresh=0.02) == 0
 
 
 class TestLoadTickers:
@@ -111,13 +95,13 @@ class TestBuildTickerDataset:
         assert "target" in result.columns
         assert "forward_return" in result.columns
 
-    def test_target_values_are_valid_classes(self):
+    def test_target_values_are_binary(self):
         long_df = _make_synthetic_df(400)
         with patch("train_model.fetch_latest_data", return_value=long_df), \
              patch("train_model.calculate_technical_indicators", return_value=long_df):
             from train_model import build_ticker_dataset
             result = build_ticker_dataset("0001.hk")
-        assert set(result["target"].unique()).issubset({-1, 0, 1})
+        assert set(result["target"].unique()).issubset({0, 1})
 
     def test_no_nan_in_result(self):
         long_df = _make_synthetic_df(400)
@@ -143,8 +127,7 @@ class TestBuildTickerDataset:
         with patch("train_model.fetch_latest_data", return_value=long_df), \
              patch("train_model.calculate_technical_indicators", return_value=long_df):
             from train_model import build_ticker_dataset
-            result = build_ticker_dataset("0001.hk", horizon=5, up_thresh=0.02,
-                                          down_thresh=0.02, clip=0.20)
+            result = build_ticker_dataset("0001.hk", horizon=5, up_thresh=0.03, clip=0.20)
         assert result is not None
         assert result["forward_return"].max() <= 0.20
         assert result["forward_return"].min() >= -0.20
@@ -154,10 +137,9 @@ class TestBuildTickerDataset:
         with patch("train_model.fetch_latest_data", return_value=long_df), \
              patch("train_model.calculate_technical_indicators", return_value=long_df):
             from train_model import build_ticker_dataset
-            result = build_ticker_dataset("0001.hk", horizon=14, up_thresh=0.05,
-                                          down_thresh=0.05, clip=0.30)
+            result = build_ticker_dataset("0001.hk", horizon=14, up_thresh=0.03, clip=0.30)
         assert result is not None
-        assert set(result["target"].unique()).issubset({-1, 0, 1})
+        assert set(result["target"].unique()).issubset({0, 1})
 
 
 class TestBuildFullDataset:
@@ -232,10 +214,10 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", side_effect=mock_build):
             from train_model import build_full_dataset
-            build_full_dataset(str(csv_file), horizon=5, up_thresh=0.02, down_thresh=0.02)
+            build_full_dataset(str(csv_file), horizon=5, up_thresh=0.03)
 
         assert received_kwargs.get('horizon') == 5
-        assert received_kwargs.get('up_thresh') == 0.02
+        assert received_kwargs.get('up_thresh') == 0.03
 
 
 class TestBuildFullDatasetSGX:
