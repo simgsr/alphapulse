@@ -166,7 +166,7 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", side_effect=mock_build):
             from train_model import build_full_dataset
-            (X_train, y_train), (X_test, y_test), _ = build_full_dataset(str(csv_file))
+            (X_train, y_train), (X_test, y_test), _, _ = build_full_dataset(str(csv_file))
 
         total = len(X_train) + len(X_test)
         assert abs(len(X_train) / total - 0.8) < 0.01
@@ -180,7 +180,7 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", return_value=df_a):
             from train_model import build_full_dataset
-            (X_train, y_train), (X_test, y_test), _ = build_full_dataset(str(csv_file))
+            (X_train, y_train), (X_test, y_test), _, _ = build_full_dataset(str(csv_file))
 
         assert list(X_train.columns) == ALL_FEATURE_NAMES
         assert list(X_test.columns) == ALL_FEATURE_NAMES
@@ -197,7 +197,7 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", side_effect=mock_build):
             from train_model import build_full_dataset
-            (X_train, y_train), _, _qt = build_full_dataset(str(csv_file))
+            (X_train, y_train), _, _qt, _ = build_full_dataset(str(csv_file))
 
         assert len(X_train) > 0
 
@@ -227,7 +227,7 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", return_value=df_a):
             from train_model import build_full_dataset
-            _, _, qt = build_full_dataset(str(csv_file))
+            _, _, qt, _ = build_full_dataset(str(csv_file))
 
         assert isinstance(qt, dict)
         assert 'ALL' in qt
@@ -276,7 +276,7 @@ class TestBuildFullDatasetSGX:
 
         with patch("train_model.build_ticker_dataset", return_value=df_a):
             from train_model import build_full_dataset
-            (X_train, _), _, _qt = build_full_dataset(str(hk_csv))
+            (X_train, _), _, _qt, _ = build_full_dataset(str(hk_csv))
 
         assert len(X_train) > 0
 

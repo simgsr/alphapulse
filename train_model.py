@@ -246,15 +246,16 @@ def train_and_save(
                 'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 5.0),
             }
             _sc = RobustScaler()
-            X_tv_sc = _sc.fit_transform(X_tv)
-            X_val_sc = _sc.transform(X_val)
+            X_tv_sc = np.asarray(_sc.fit_transform(X_tv))
+            X_val_sc = np.asarray(_sc.transform(X_val))
             _clf = LGBMClassifier(
                 scale_pos_weight=spw, n_jobs=2, random_state=42, verbose=-1, **params,
             )
             _clf.fit(
                 X_tv_sc, y_tv,
                 eval_set=[(X_val_sc, y_val)],
-                callbacks=[lgb_early_stopping(50, verbose=False)],
+                eval_metric='average_precision',
+                callbacks=[lgb_early_stopping(100, verbose=False)],
             )
             y_proba_val = _clf.predict_proba(X_val_sc)[:, 1]
             return average_precision_score(y_val, y_proba_val)
@@ -281,12 +282,13 @@ def train_and_save(
     y_val_es = y_train.iloc[-_val_n:]
     _scaler = pipeline.named_steps['scaler']
     _clf = pipeline.named_steps['clf']
-    X_tr_sc = _scaler.fit_transform(X_tr_es)
-    X_val_sc = _scaler.transform(X_val_es)
+    X_tr_sc = np.asarray(_scaler.fit_transform(X_tr_es))
+    X_val_sc = np.asarray(_scaler.transform(X_val_es))
     _clf.fit(
         X_tr_sc, y_tr_es,
         eval_set=[(X_val_sc, y_val_es)],
-        callbacks=[lgb_early_stopping(50, verbose=False), lgb_log_evaluation(100)],
+        eval_metric='average_precision',
+        callbacks=[lgb_early_stopping(100, verbose=False), lgb_log_evaluation(100)],
     )
     print(f"Best iteration: {_clf.best_iteration_}  (max: {_clf.get_params()['n_estimators']})")
     print("Fitting complete.")
@@ -355,7 +357,7 @@ if __name__ == '__main__':
     for _i, _t in enumerate(_tickers):
         if _i % 100 == 0:
             print(f"  [{_i}/{len(_tickers)}] Fetching...", flush=True)
-        _raw = fetch_latest_data(_t)
+        _raw = fetch_latest_data(_t, period='5y')
         if _raw is not None:
             _raw_cache[_t] = calculate_technical_indicators(_raw)
     print(f"Cached {len(_raw_cache)} tickers.\n")

@@ -45,27 +45,26 @@ app.py
 
 ```
 .
-├── app.py                   # Gradio 6 UI + inference logic
+├── app.py                   # Gradio UI + inference logic
 ├── get_price_data.py        # yfinance fetch + 21 technical indicators
 ├── train_model.py           # Full training pipeline (run locally)
+├── predict_upstock.py       # CLI: rank top 5 stocks by P(UP>3%)
+├── validate_tickers.py      # Utility: build valid_tickers.csv from raw list
+├── llm_utils.py             # LLM interpretation layer
 ├── tests/
 │   ├── test_app.py
+│   ├── test_get_price_data.py
 │   └── test_train_model.py
 ├── data/
-│   ├── alphapulse.csv       # HKEX ticker list (gitignored)
-│   └── sgx_tickers.csv      # SGX ticker list (optional, gitignored)
-├── docs/
-│   └── superpowers/         # Design specs and implementation plans
-├── Dockerfile
+│   └── valid_tickers.csv    # Pre-validated ticker list
 ├── requirements.txt
-├── requirements-dev.txt
-└── .dockerignore
+└── requirements-dev.txt
 ```
 
 ## Local Development
 
 ```bash
-python -m venv venv && source venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 # Run tests:
@@ -87,19 +86,6 @@ python train_model.py
 ```
 
 To include SGX tickers, place `data/sgx_tickers.csv` (one ticker per line) alongside `data/alphapulse.csv` — it is picked up automatically.
-
-## Docker
-
-```bash
-# Build (models must be present in the build context):
-docker build -t alphapulse .
-
-# Run:
-docker run -p 7860:7860 alphapulse
-# → http://localhost:7860
-```
-
-The container runs as a non-root user (`appuser`).
 
 ## Disclaimer
 
