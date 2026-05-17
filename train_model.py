@@ -65,10 +65,13 @@ def build_ticker_dataset(
     up_thresh: float = 0.03,
     clip: float = 0.30,
     raw_df: Optional[pd.DataFrame] = None,
+    min_price: float = 1.0,
+    min_avg_volume: int = 500_000,
 ) -> Optional[pd.DataFrame]:
     """Fetch, engineer features, and label one ticker.
 
-    Returns None if data is unavailable or fewer than 252 labeled rows remain.
+    Returns None if data is unavailable, fails price/volume filters, or fewer
+    than 252 labeled rows remain.
     Pass raw_df to skip the fetch+indicator step (reuse cached data).
     """
     if raw_df is None:
@@ -77,6 +80,10 @@ def build_ticker_dataset(
             return None
         raw_df = calculate_technical_indicators(raw)
     df = raw_df.copy()
+    if df['Adj_Close'].median() < min_price:
+        return None
+    if df['Adj_Volume'].median() < min_avg_volume:
+        return None
     df['exchange'] = _ticker_exchange(ticker)
     df['forward_return'] = df['Adj_Close'].shift(-horizon) / df['Adj_Close'] - 1
     df = df.dropna(subset=['forward_return'])
@@ -111,6 +118,8 @@ def build_full_dataset(
     up_thresh: float = 0.03,
     extra_csv_paths: list = None,
     raw_cache: Optional[dict] = None,
+    min_price: float = 1.0,
+    min_avg_volume: int = 500_000,
 ) -> Tuple[Tuple, Tuple, dict]:
     """Fetch all tickers, combine, compute cross-sectional ranks, and time-split 80/20.
 
@@ -130,7 +139,10 @@ def build_full_dataset(
         if i % 100 == 0:
             print(f"  [{i}/{len(tickers)}] Processing tickers...", flush=True)
         cached = raw_cache.get(ticker) if raw_cache else None
-        df = build_ticker_dataset(ticker, horizon=horizon, up_thresh=up_thresh, raw_df=cached)
+        df = build_ticker_dataset(
+            ticker, horizon=horizon, up_thresh=up_thresh, raw_df=cached,
+            min_price=min_price, min_avg_volume=min_avg_volume,
+        )
         if df is not None:
             frames.append(df)
             used_tickers.append(ticker)
@@ -159,11 +171,12 @@ def build_full_dataset(
     return (X.iloc[:split], y.iloc[:split]), (X.iloc[split:], y.iloc[split:]), quantile_table, used_tickers
 
 
-def build_pipeline(scale_pos_weight: float = 1.0) -> Pipeline:
+def build_pipeline() -> Pipeline:
     """Build the unfitted sklearn Pipeline.
 
     RobustScaler is resistant to HK small-cap outliers.
-    scale_pos_weight = count(NOT-UP) / count(UP) balances the binary imbalance.
+    is_unbalance=True resamples rather than reweights, producing better-calibrated
+    probabilities than scale_pos_weight (which compresses outputs near the base rate).
     """
     return Pipeline([
         ('scaler', RobustScaler()),
@@ -171,7 +184,7 @@ def build_pipeline(scale_pos_weight: float = 1.0) -> Pipeline:
             n_estimators=1000,
             num_leaves=95,
             learning_rate=0.05,
-            scale_pos_weight=scale_pos_weight,
+            is_unbalance=True,
             min_child_samples=20,
             n_jobs=2,
             random_state=42,
@@ -198,12 +211,16 @@ def train_and_save(
     optuna_tune: bool = False,
     save_tickers: bool = True,
     raw_cache: Optional[dict] = None,
+    min_price: float = 1.0,
+    min_avg_volume: int = 500_000,
 ) -> None:
     """Full training run: load data, fit pipeline, evaluate, save model."""
     print(f"\n=== AlphaPulse Model Training — {horizon}-day horizon ===")
     print(f"Ticker source : {csv_path}")
     print(f"UP threshold  : > {up_thresh*100:.0f}%  (binary: NOT-UP otherwise)")
     print(f"Clip range    : ±{clip*100:.0f}%")
+    print(f"Min price     : {min_price}")
+    print(f"Min avg vol   : {min_avg_volume:,}")
     print(f"Output path   : {output_path}\n")
 
     (X_train, y_train), (X_test, y_test), quantile_table, used_tickers = build_full_dataset(
@@ -212,15 +229,14 @@ def train_and_save(
         up_thresh=up_thresh,
         extra_csv_paths=extra_csv_paths,
         raw_cache=raw_cache,
+        min_price=min_price,
+        min_avg_volume=min_avg_volume,
     )
 
     print(f"\nTraining rows : {len(X_train):,}")
     print(f"Test rows     : {len(X_test):,}")
     print("\nClass distribution (train set):")
     print(y_train.value_counts().sort_index().to_string())
-
-    spw = len(y_train[y_train == 0]) / max(len(y_train[y_train == 1]), 1)
-    print(f"\nscale_pos_weight : {spw:.2f}  (NOT-UP / UP ratio)")
 
     if optuna_tune:
         import optuna
@@ -249,7 +265,7 @@ def train_and_save(
             X_tv_sc = np.asarray(_sc.fit_transform(X_tv))
             X_val_sc = np.asarray(_sc.transform(X_val))
             _clf = LGBMClassifier(
-                scale_pos_weight=spw, n_jobs=2, random_state=42, verbose=-1, **params,
+                is_unbalance=True, n_jobs=2, random_state=42, verbose=-1, **params,
             )
             _clf.fit(
                 X_tv_sc, y_tv,
@@ -267,12 +283,12 @@ def train_and_save(
         pipeline = Pipeline([
             ('scaler', RobustScaler()),
             ('clf', LGBMClassifier(
-                scale_pos_weight=spw, n_jobs=2, random_state=42, verbose=-1,
+                is_unbalance=True, n_jobs=2, random_state=42, verbose=-1,
                 **study.best_params,
             ))
         ])
     else:
-        pipeline = build_pipeline(scale_pos_weight=spw)
+        pipeline = build_pipeline()
 
     print("Fitting pipeline with early stopping — this may take a few minutes...")
     _val_n = max(int(len(X_train) * 0.15), 500)
@@ -338,7 +354,95 @@ def train_and_save(
         print(f"Valid tickers  : {tickers_csv}  ({len(used_tickers)} tickers)")
 
 
+def diagnose_saved_model(
+    model_path: str,
+    csv_path: str,
+    n_tickers: int = 60,
+    extra_csv_paths: list = None,
+) -> None:
+    """Load a saved model and run probability/feature diagnostics on a ticker sample.
+
+    Avoids a full retrain — useful for quickly locating the operating threshold
+    and checking whether features carry weight.
+    """
+    data = joblib.load(model_path)
+    pipeline = data['model']
+    horizon = data.get('horizon', 7)
+    up_thresh = data.get('up_thresh', 0.03)
+
+    tickers = load_tickers(csv_path)
+    if extra_csv_paths:
+        for p in extra_csv_paths:
+            tickers += load_tickers(p)
+        tickers = list(dict.fromkeys(tickers))
+    sample = tickers[:n_tickers]
+
+    print(f"\n=== Diagnosing {model_path} — sampling {n_tickers} tickers ===")
+    frames = []
+    for i, ticker in enumerate(sample):
+        if i % 20 == 0:
+            print(f"  [{i}/{len(sample)}] Fetching...", flush=True)
+        raw = fetch_latest_data(ticker, period='5y')
+        if raw is None:
+            continue
+        df_raw = calculate_technical_indicators(raw)
+        df = build_ticker_dataset(ticker, horizon=horizon, up_thresh=up_thresh, raw_df=df_raw)
+        if df is not None:
+            frames.append(df)
+
+    if not frames:
+        print("No usable data found in sample.")
+        return
+
+    combined = pd.concat(frames).sort_index()
+    date_key = combined.index.normalize()
+    for feat in FEATURE_NAMES:
+        combined[f'{feat}_rank'] = (
+            combined.groupby([date_key, combined['exchange']])[feat].rank(pct=True)
+        )
+
+    X = combined[ALL_FEATURE_NAMES]
+    y = combined['target']
+    y_proba_up = pipeline.predict_proba(X)[:, list(pipeline.classes_).index(1)]
+
+    # --- Probability distribution ---
+    print(f"\n=== P(UP) Distribution  (rows={len(y):,}, UP base rate={y.mean():.3f}) ===")
+    for p in [1, 5, 10, 25, 50, 75, 90, 95, 99]:
+        print(f"  p{p:02d}: {np.percentile(y_proba_up, p):.4f}")
+
+    # --- Extended threshold sweep ---
+    print(f"\n=== Extended Threshold Sweep (step 0.02) ===")
+    print(f"{'Threshold':>10} {'Precision':>10} {'Recall':>10} {'Signals':>10}")
+    for t in np.arange(0.30, 0.81, 0.02):
+        mask = (y_proba_up >= t).astype(int)
+        n_sig = int(mask.sum())
+        prec = precision_score(y, mask, zero_division=0)
+        rec = recall_score(y, mask, zero_division=0)
+        print(f"{t:>10.2f} {prec:>10.4f} {rec:>10.4f} {n_sig:>10}")
+
+    # --- Feature importances ---
+    clf = pipeline.named_steps['clf']
+    imp = pd.Series(clf.feature_importances_, index=ALL_FEATURE_NAMES).sort_values(ascending=False)
+    print(f"\n=== Top 20 Feature Importances ===")
+    print(imp.head(20).to_string())
+    rank_weight = imp[RANK_FEATURE_NAMES].sum() / imp.sum()
+    print(f"\nRank-feature share of total importance: {rank_weight:.1%}")
+
+
 if __name__ == '__main__':
+    import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == '--diagnose':
+        # Usage: python train_model.py --diagnose <model.joblib> [n_tickers]
+        _model_path = sys.argv[2] if len(sys.argv) > 2 else 'stock_model_5d.joblib'
+        _n = int(sys.argv[3]) if len(sys.argv) > 3 else 60
+        _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+        _all_csvs = sorted(
+            os.path.join(_data_dir, f) for f in os.listdir(_data_dir) if f.endswith('.csv')
+        )
+        diagnose_saved_model(_model_path, _all_csvs[0], n_tickers=_n,
+                             extra_csv_paths=_all_csvs[1:] or None)
+        sys.exit(0)
+
     _data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
     _all_csvs = sorted(
         os.path.join(_data_dir, f) for f in os.listdir(_data_dir) if f.endswith('.csv')
@@ -365,10 +469,10 @@ if __name__ == '__main__':
     _base_dir = os.path.dirname(os.path.abspath(__file__))
     train_and_save(
         _all_csvs[0],
-        horizon=5,
+        horizon=7,
         up_thresh=0.03,
         clip=0.20,
-        output_path=os.path.join(_base_dir, 'stock_model_5d.joblib'),
+        output_path=os.path.join(_base_dir, 'stock_model_7d.joblib'),
         extra_csv_paths=_all_csvs[1:] or None,
         raw_cache=_raw_cache,
         optuna_tune=True,

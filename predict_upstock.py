@@ -1,7 +1,7 @@
 """
 Predict top 5 UP stocks.
 
-Loads stock_model_5d.joblib and stock_model_14d.joblib, fetches live data for
+Loads stock_model_7d.joblib and stock_model_14d.joblib, fetches live data for
 every ticker in the supplied CSV, and ranks them by P(UP > 3%) confidence.
 
 Usage:
@@ -19,6 +19,11 @@ warnings.filterwarnings('ignore')
 
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 from train_model import FEATURE_NAMES, ALL_FEATURE_NAMES, _ticker_exchange
+
+# Minimum P(UP>3%) to show a ticker as a signal.
+# Calibrated against the diagnostic sweep: 0.33 yields ~60% precision with
+# meaningful recall; raise toward 0.35 for higher precision, fewer signals.
+SIGNAL_THRESHOLD = 0.33
 
 
 def load_model(path: Path):
@@ -63,15 +68,18 @@ def top5_table(model_data: dict, X: pd.DataFrame, ticker_list: list[str], label:
     proba = pipeline.predict_proba(X)[:, up_idx]
 
     df = pd.DataFrame({'Ticker': ticker_list, 'P(UP>3%)': proba})
-    df = df.sort_values('P(UP>3%)', ascending=False).head(5).reset_index(drop=True)
-    df.index = range(1, 6)
+    df = df[df['P(UP>3%)'] >= SIGNAL_THRESHOLD].sort_values('P(UP>3%)', ascending=False).head(5).reset_index(drop=True)
+    df.index = range(1, len(df) + 1)
     df.index.name = 'Rank'
     df['P(UP>3%)'] = df['P(UP>3%)'].map('{:.1%}'.format)
 
     print(f'\n{"="*40}')
     print(f'  TOP 5  —  {label}')
     print(f'{"="*40}')
-    print(df.to_string())
+    if df.empty:
+        print(f'  No tickers above {SIGNAL_THRESHOLD:.0%} confidence threshold.')
+    else:
+        print(df.to_string())
     return df
 
 
@@ -82,9 +90,9 @@ def main():
 
     project_dir = Path(__file__).resolve().parent
 
-    model_5d = load_model(project_dir / 'stock_model_5d.joblib')
+    model_7d = load_model(project_dir / 'stock_model_7d.joblib')
     model_14d = load_model(project_dir / 'stock_model_14d.joblib')
-    print(f'5-day  model : {model_5d["description"]}')
+    print(f'7-day  model : {model_7d["description"]}')
     print(f'14-day model : {model_14d["description"]}')
 
     csv_path = Path(args.csv)
@@ -109,7 +117,7 @@ def main():
     print(f'Feature matrix: {X.shape}  ({X.shape[0]} tickers, {X.shape[1]} features)')
 
     ticker_list = snapshot['ticker'].tolist()
-    top5_table(model_5d,  X, ticker_list, '5-Day Horizon  (P(UP>3%))')
+    top5_table(model_7d,  X, ticker_list, '7-Day Horizon  (P(UP>3%))')
     top5_table(model_14d, X, ticker_list, '14-Day Horizon (P(UP>3%))')
 
 

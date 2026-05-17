@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 
 _here = os.path.dirname(os.path.abspath(__file__))
-MODEL_5D_PATH = os.path.join(_here, 'stock_model_5d.joblib')
+MODEL_7D_PATH = os.path.join(_here, 'stock_model_7d.joblib')
 MODEL_14D_PATH = os.path.join(_here, 'stock_model_14d.joblib')
 WATCHLIST_PATH = os.path.join(_here, 'watchlist.json')
 
@@ -24,7 +24,7 @@ def _load_model(path):
         return None, [], {}
 
 
-model_5d, feature_names_5d, quantile_table_5d = _load_model(MODEL_5D_PATH)
+model_7d, feature_names_7d, quantile_table_7d = _load_model(MODEL_7D_PATH)
 model_14d, feature_names_14d, quantile_table_14d = _load_model(MODEL_14D_PATH)
 
 SIGNAL_MAP = {
@@ -165,15 +165,15 @@ def _build_dual_prediction(ticker: str) -> dict | None:
             "last_updated": str(data.index[-1].date()),
         }
 
-        if model_5d is not None:
-            p5 = add_rank_features(processed, ticker, quantile_table_5d) if quantile_table_5d else processed
-            latest = p5[feature_names_5d].iloc[-1:].values
-            r5 = build_prediction_response(ticker, model_5d, latest, data)
+        if model_7d is not None:
+            p7 = add_rank_features(processed, ticker, quantile_table_7d) if quantile_table_7d else processed
+            latest = p7[feature_names_7d].iloc[-1:].values
+            r7 = build_prediction_response(ticker, model_7d, latest, data)
             result.update({
-                "signal_5d": r5["signal"],
-                "confidence_up_5d": r5["confidence_up_3pct"],
-                "edge_ratio_5d": r5["edge_ratio"],
-                "prediction_5d": r5["prediction"],
+                "signal_7d": r7["signal"],
+                "confidence_up_7d": r7["confidence_up_3pct"],
+                "edge_ratio_7d": r7["edge_ratio"],
+                "prediction_7d": r7["prediction"],
             })
 
         if model_14d is not None:
@@ -241,18 +241,18 @@ def _scan_html(results: list) -> str:
 
     rows = ""
     for i, r in enumerate(results):
-        up_5d = round(r.get("confidence_up_5d", 0) * 100)
+        up_7d = round(r.get("confidence_up_7d", 0) * 100)
         up_14d = round(r.get("confidence_up_14d", 0) * 100)
-        sig5_color = "#1e4d17" if r.get("prediction_5d") == 1 else "#5a4a15"
+        sig7_color = "#1e4d17" if r.get("prediction_7d") == 1 else "#5a4a15"
         sig14_color = "#1e4d17" if r.get("prediction_14d") == 1 else "#5a4a15"
         rows += (
             f'<tr style="border-bottom:1px solid #e5e0d9;">'
             f'<td style="padding:8px 10px;color:#aaa;">{i+1}</td>'
             f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{r["ticker"]}</td>'
             f'<td style="padding:8px 10px;color:#333;">{r["current_price"]:.3f}</td>'
-            f'<td style="padding:8px 10px;color:{sig5_color};font-weight:700;">'
-            f'{r.get("signal_5d", "N/A")}</td>'
-            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{up_5d}%</td>'
+            f'<td style="padding:8px 10px;color:{sig7_color};font-weight:700;">'
+            f'{r.get("signal_7d", "N/A")}</td>'
+            f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{up_7d}%</td>'
             f'<td style="padding:8px 10px;color:{sig14_color};font-weight:700;">'
             f'{r.get("signal_14d", "N/A")}</td>'
             f'<td style="padding:8px 10px;font-weight:700;color:#1a1a18;">{up_14d}%</td>'
@@ -266,8 +266,8 @@ def _scan_html(results: list) -> str:
         f'<th style="{th}">#</th>'
         f'<th style="{th}">TICKER</th>'
         f'<th style="{th}">PRICE</th>'
-        f'<th style="{th}">SIGNAL 5D</th>'
-        f'<th style="{th}">UP CONF 5D</th>'
+        f'<th style="{th}">SIGNAL 7D</th>'
+        f'<th style="{th}">UP CONF 7D</th>'
         f'<th style="{th}">SIGNAL 14D</th>'
         f'<th style="{th}">UP CONF 14D</th>'
         f'</tr></thead>'
@@ -288,15 +288,15 @@ def analyze(ticker: str, watchlist: list):
         err = f'<p style="{_ERR_STYLE}">Enter a ticker symbol.</p>'
         return (err, "", {}, *_wl_updates(watchlist))
 
-    html_5d = html_14d = ""
-    r5 = r14 = None
+    html_7d = html_14d = ""
+    r7 = r14 = None
 
-    if model_5d is not None:
-        r5 = _build_prediction(ticker, model_5d, feature_names_5d, quantile_table_5d)
-        html_5d = (_result_html(r5, label="5-DAY FORECAST") if r5
-                   else f'<p style="{_ERR_STYLE}">No data for {ticker} (5D).</p>')
+    if model_7d is not None:
+        r7 = _build_prediction(ticker, model_7d, feature_names_7d, quantile_table_7d)
+        html_7d = (_result_html(r7, label="7-DAY FORECAST") if r7
+                   else f'<p style="{_ERR_STYLE}">No data for {ticker} (7D).</p>')
     else:
-        html_5d = f'<p style="{_ERR_STYLE}">5-day model not loaded.</p>'
+        html_7d = f'<p style="{_ERR_STYLE}">7-day model not loaded.</p>'
 
     if model_14d is not None:
         r14 = _build_prediction(ticker, model_14d, feature_names_14d, quantile_table_14d)
@@ -305,25 +305,25 @@ def analyze(ticker: str, watchlist: list):
     else:
         html_14d = f'<p style="{_ERR_STYLE}">14-day model not loaded.</p>'
 
-    if ticker not in watchlist and (r5 is not None or r14 is not None):
+    if ticker not in watchlist and (r7 is not None or r14 is not None):
         watchlist = watchlist + [ticker]
         _save_watchlist(watchlist)
 
     last_result = {}
-    if r5 or r14:
+    if r7 or r14:
         last_result = {
             "ticker": ticker,
-            "current_price": (r5 or r14).get("current_price", 0),
-            "result_5d": r5 or {},
+            "current_price": (r7 or r14).get("current_price", 0),
+            "result_7d": r7 or {},
             "result_14d": r14 or {},
         }
-        if r5:
-            last_result.update({k: r5.get(k, 0) for k in [
+        if r7:
+            last_result.update({k: r7.get(k, 0) for k in [
                 "RSI_14", "MACD_hist", "SMA_20_ratio", "Volume_ratio_20",
                 "ATR_ratio", "Returns_5d", "Returns_20d", "BB_pct_b",
             ]})
 
-    return (html_5d, html_14d, last_result, *_wl_updates(watchlist))
+    return (html_7d, html_14d, last_result, *_wl_updates(watchlist))
 
 
 def add_ticker(ticker: str, watchlist: list):
@@ -374,14 +374,14 @@ def remove_tickers(to_remove: list, watchlist: list):
 def scan_watchlist(watchlist: list):
     if not watchlist:
         return f'<p style="{_ERR_STYLE}">Watchlist is empty.</p>', []
-    if model_5d is None and model_14d is None:
+    if model_7d is None and model_14d is None:
         return f'<p style="{_ERR_STYLE}">No models loaded.</p>', []
     with ThreadPoolExecutor(max_workers=8) as ex:
         results = list(ex.map(_build_dual_prediction, watchlist))
     valid = [r for r in results if r is not None]
     top10 = sorted(
         valid,
-        key=lambda r: (r.get("confidence_up_5d", 0), r.get("edge_ratio_5d", 0)),
+        key=lambda r: (r.get("confidence_up_7d", 0), r.get("edge_ratio_7d", 0)),
         reverse=True,
     )[:10]
     return _scan_html(top10), top10
@@ -556,7 +556,7 @@ def _explain_signal_action(last_result: dict):
         return explain_signal(
             ticker=last_result.get("ticker", ""),
             price=last_result.get("current_price", 0),
-            result_5d=last_result.get("result_5d", {}),
+            result_7d=last_result.get("result_7d", {}),
             result_14d=last_result.get("result_14d", {}),
             indicators=indicators,
         )
@@ -599,7 +599,7 @@ with gr.Blocks(title="AlphaPulse") as demo:
         )
         analyze_btn = gr.Button("ANALYZE", variant="primary", scale=1)
     with gr.Row():
-        result_out_5d = gr.HTML(value="")
+        result_out_7d = gr.HTML(value="")
         result_out_14d = gr.HTML(value="")
     explain_btn = gr.Button("EXPLAIN SIGNAL", variant="secondary")
     explain_out = gr.Markdown(value="")
@@ -647,7 +647,7 @@ with gr.Blocks(title="AlphaPulse") as demo:
 
     # ── Wiring ────────────────────────────────────────────────────────────────
     _wl_outs = [watchlist_state, remove_cg]
-    _analyze_outs = [result_out_5d, result_out_14d, last_result_state] + _wl_outs
+    _analyze_outs = [result_out_7d, result_out_14d, last_result_state] + _wl_outs
 
     analyze_btn.click(
         fn=analyze,

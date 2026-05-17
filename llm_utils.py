@@ -36,7 +36,7 @@ def get_llm(provider: str = LLM_PROVIDER, temperature: float = 0):
 def explain_signal(
     ticker: str,
     price: float,
-    result_5d: dict,
+    result_7d: dict,
     result_14d: dict,
     indicators: dict,
 ) -> str:
@@ -47,10 +47,10 @@ def explain_signal(
     )
     prompt = (
         f"Ticker: {ticker}  |  Current price: {price:.3f}\n\n"
-        f"5-day forecast:\n"
-        f"  Signal: {result_5d.get('signal', 'N/A')}\n"
-        f"  Confidence (UP >3%): {result_5d.get('confidence_up_3pct', 0)*100:.1f}%\n"
-        f"  Edge ratio: {result_5d.get('edge_ratio', 0):.2f}x\n\n"
+        f"7-day forecast:\n"
+        f"  Signal: {result_7d.get('signal', 'N/A')}\n"
+        f"  Confidence (UP >3%): {result_7d.get('confidence_up_3pct', 0)*100:.1f}%\n"
+        f"  Edge ratio: {result_7d.get('edge_ratio', 0):.2f}x\n\n"
         f"14-day forecast:\n"
         f"  Signal: {result_14d.get('signal', 'N/A')}\n"
         f"  Confidence (UP >3%): {result_14d.get('confidence_up_3pct', 0)*100:.1f}%\n"
@@ -67,7 +67,7 @@ def summarize_scan(scan_rows: list) -> str:
     if not scan_rows:
         return "No scan results to summarise."
     rows_text = "\n".join(
-        f"  {r['ticker']}: 5d={r.get('signal_5d','N/A')} ({r.get('confidence_up_5d',0)*100:.0f}%), "
+        f"  {r['ticker']}: 7d={r.get('signal_7d','N/A')} ({r.get('confidence_up_7d',0)*100:.0f}%), "
         f"14d={r.get('signal_14d','N/A')} ({r.get('confidence_up_14d',0)*100:.0f}%)"
         for r in scan_rows
     )
