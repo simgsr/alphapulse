@@ -5,6 +5,7 @@ import json
 import os
 import re
 import numpy as np
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from get_price_data import fetch_latest_data, calculate_technical_indicators
 
@@ -17,21 +18,21 @@ WATCHLIST_PATH = os.path.join(_here, 'watchlist.json')
 def _load_model(path):
     try:
         d = joblib.load(path)
-        return d['model'], d['features']
+        return d['model'], d['features'], d.get('quantile_table', {})
     except Exception as e:
         print(f"Error loading model {path}: {e}")
-        return None, []
+        return None, [], {}
 
 
-model_5d, feature_names_5d = _load_model(MODEL_5D_PATH)
-model_14d, feature_names_14d = _load_model(MODEL_14D_PATH)
+model_5d, feature_names_5d, quantile_table_5d = _load_model(MODEL_5D_PATH)
+model_14d, feature_names_14d, quantile_table_14d = _load_model(MODEL_14D_PATH)
 
 SIGNAL_MAP = {
     1: "UP >3%",
     0: "NO SIGNAL",
 }
 
-UP_THRESHOLD = 0.5
+UP_THRESHOLD = 0.7
 
 DEFAULT_WATCHLIST = [
     # Singapore
@@ -84,15 +85,34 @@ def _save_watchlist(watchlist: list) -> None:
         print(f"Failed to save watchlist: {e}")
 
 
+# ── Rank feature helper ───────────────────────────────────────────────────────
+
+def add_rank_features(df: pd.DataFrame, ticker: str, quantile_table: dict) -> pd.DataFrame:
+    """Append 21 _rank columns to df using stored quantile arrays for the ticker's exchange."""
+    from train_model import FEATURE_NAMES, _ticker_exchange
+    exchange = _ticker_exchange(ticker)
+    qt = quantile_table.get(exchange) or quantile_table.get('ALL') or {}
+    df = df.copy()
+    for feat in FEATURE_NAMES:
+        arr = qt.get(feat)
+        if arr is not None and len(arr) > 0:
+            df[f'{feat}_rank'] = df[feat].apply(
+                lambda v, a=arr: float(np.searchsorted(a, v) / len(a))
+            )
+        else:
+            df[f'{feat}_rank'] = 0.5
+    return df
+
+
 # ── Pure inference helpers (kept for test compatibility) ─────────────────────
 
 def build_prediction_response(ticker: str, mdl, features_array: np.ndarray, raw_data) -> dict:
-    prediction = int(mdl.predict(features_array)[0])
     probabilities = mdl.predict_proba(features_array)[0].tolist()
     classes = mdl.classes_.tolist()
     prob_dict = {str(int(c)): round(p, 4) for c, p in zip(classes, probabilities)}
 
     confidence_up_3pct = round(prob_dict.get('1', 0.0), 4)
+    prediction = 1 if confidence_up_3pct >= UP_THRESHOLD else 0
     edge_ratio = round(confidence_up_3pct / UP_THRESHOLD, 2)
 
     return {
@@ -113,7 +133,7 @@ def rank_scan_results(results: list, n: int = 5) -> list:
 
 # ── Data + prediction pipeline ───────────────────────────────────────────────
 
-def _build_prediction(ticker: str, mdl, feat_names: list) -> dict | None:
+def _build_prediction(ticker: str, mdl, feat_names: list, quantile_table: dict = None) -> dict | None:
     try:
         data = fetch_latest_data(ticker)
         if data is None:
@@ -121,6 +141,8 @@ def _build_prediction(ticker: str, mdl, feat_names: list) -> dict | None:
         processed = calculate_technical_indicators(data)
         if processed.empty:
             return None
+        if quantile_table:
+            processed = add_rank_features(processed, ticker, quantile_table)
         latest = processed[feat_names].iloc[-1:].values
         return build_prediction_response(ticker, mdl, latest, data)
     except Exception as e:
@@ -144,7 +166,8 @@ def _build_dual_prediction(ticker: str) -> dict | None:
         }
 
         if model_5d is not None:
-            latest = processed[feature_names_5d].iloc[-1:].values
+            p5 = add_rank_features(processed, ticker, quantile_table_5d) if quantile_table_5d else processed
+            latest = p5[feature_names_5d].iloc[-1:].values
             r5 = build_prediction_response(ticker, model_5d, latest, data)
             result.update({
                 "signal_5d": r5["signal"],
@@ -154,7 +177,8 @@ def _build_dual_prediction(ticker: str) -> dict | None:
             })
 
         if model_14d is not None:
-            latest = processed[feature_names_14d].iloc[-1:].values
+            p14 = add_rank_features(processed, ticker, quantile_table_14d) if quantile_table_14d else processed
+            latest = p14[feature_names_14d].iloc[-1:].values
             r14 = build_prediction_response(ticker, model_14d, latest, data)
             result.update({
                 "signal_14d": r14["signal"],
@@ -262,20 +286,20 @@ def analyze(ticker: str, watchlist: list):
     ticker = _normalize_ticker(ticker)
     if not ticker:
         err = f'<p style="{_ERR_STYLE}">Enter a ticker symbol.</p>'
-        return (err, "", *_wl_updates(watchlist))
+        return (err, "", {}, *_wl_updates(watchlist))
 
     html_5d = html_14d = ""
     r5 = r14 = None
 
     if model_5d is not None:
-        r5 = _build_prediction(ticker, model_5d, feature_names_5d)
+        r5 = _build_prediction(ticker, model_5d, feature_names_5d, quantile_table_5d)
         html_5d = (_result_html(r5, label="5-DAY FORECAST") if r5
                    else f'<p style="{_ERR_STYLE}">No data for {ticker} (5D).</p>')
     else:
         html_5d = f'<p style="{_ERR_STYLE}">5-day model not loaded.</p>'
 
     if model_14d is not None:
-        r14 = _build_prediction(ticker, model_14d, feature_names_14d)
+        r14 = _build_prediction(ticker, model_14d, feature_names_14d, quantile_table_14d)
         html_14d = (_result_html(r14, label="14-DAY FORECAST") if r14
                     else f'<p style="{_ERR_STYLE}">No data for {ticker} (14D).</p>')
     else:
@@ -285,7 +309,21 @@ def analyze(ticker: str, watchlist: list):
         watchlist = watchlist + [ticker]
         _save_watchlist(watchlist)
 
-    return (html_5d, html_14d, *_wl_updates(watchlist))
+    last_result = {}
+    if r5 or r14:
+        last_result = {
+            "ticker": ticker,
+            "current_price": (r5 or r14).get("current_price", 0),
+            "result_5d": r5 or {},
+            "result_14d": r14 or {},
+        }
+        if r5:
+            last_result.update({k: r5.get(k, 0) for k in [
+                "RSI_14", "MACD_hist", "SMA_20_ratio", "Volume_ratio_20",
+                "ATR_ratio", "Returns_5d", "Returns_20d", "BB_pct_b",
+            ]})
+
+    return (html_5d, html_14d, last_result, *_wl_updates(watchlist))
 
 
 def add_ticker(ticker: str, watchlist: list):
@@ -333,11 +371,11 @@ def remove_tickers(to_remove: list, watchlist: list):
     return _wl_updates(watchlist)
 
 
-def scan_watchlist(watchlist: list) -> str:
+def scan_watchlist(watchlist: list):
     if not watchlist:
-        return f'<p style="{_ERR_STYLE}">Watchlist is empty.</p>'
+        return f'<p style="{_ERR_STYLE}">Watchlist is empty.</p>', []
     if model_5d is None and model_14d is None:
-        return f'<p style="{_ERR_STYLE}">No models loaded.</p>'
+        return f'<p style="{_ERR_STYLE}">No models loaded.</p>', []
     with ThreadPoolExecutor(max_workers=8) as ex:
         results = list(ex.map(_build_dual_prediction, watchlist))
     valid = [r for r in results if r is not None]
@@ -346,7 +384,7 @@ def scan_watchlist(watchlist: list) -> str:
         key=lambda r: (r.get("confidence_up_5d", 0), r.get("edge_ratio_5d", 0)),
         reverse=True,
     )[:10]
-    return _scan_html(top10)
+    return _scan_html(top10), top10
 
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
@@ -506,8 +544,40 @@ button:active { opacity: 0.75 !important; }
 
 INITIAL_WATCHLIST = _load_watchlist()
 
+def _explain_signal_action(last_result: dict):
+    if not last_result:
+        return "Run an analysis first."
+    try:
+        from llm_utils import explain_signal
+        indicators = {k: last_result.get(k, 0) for k in [
+            "RSI_14", "MACD_hist", "SMA_20_ratio", "Volume_ratio_20",
+            "ATR_ratio", "Returns_5d", "Returns_20d", "BB_pct_b",
+        ]}
+        return explain_signal(
+            ticker=last_result.get("ticker", ""),
+            price=last_result.get("current_price", 0),
+            result_5d=last_result.get("result_5d", {}),
+            result_14d=last_result.get("result_14d", {}),
+            indicators=indicators,
+        )
+    except Exception as e:
+        return f"LLM error: {e}"
+
+
+def _summarize_scan_action(scan_results: list):
+    if not scan_results:
+        return "Run a scan first."
+    try:
+        from llm_utils import summarize_scan
+        return summarize_scan(scan_results)
+    except Exception as e:
+        return f"LLM error: {e}"
+
+
 with gr.Blocks(title="AlphaPulse") as demo:
     watchlist_state = gr.State(INITIAL_WATCHLIST)
+    last_result_state = gr.State({})
+    scan_results_state = gr.State([])
 
     # ── Header ────────────────────────────────────────────────────────────────
     gr.HTML("""
@@ -531,6 +601,8 @@ with gr.Blocks(title="AlphaPulse") as demo:
     with gr.Row():
         result_out_5d = gr.HTML(value="")
         result_out_14d = gr.HTML(value="")
+    explain_btn = gr.Button("EXPLAIN SIGNAL", variant="secondary")
+    explain_out = gr.Markdown(value="")
 
     # ── Watchlist ─────────────────────────────────────────────────────────────
     gr.HTML('<div class="sec-label" style="margin-top:18px;">── WATCHLIST ──</div>')
@@ -563,6 +635,8 @@ with gr.Blocks(title="AlphaPulse") as demo:
     gr.HTML('<div class="sec-label" style="margin-top:18px;">── SCAN ──</div>')
     scan_btn = gr.Button("SCAN WATCHLIST", variant="primary")
     scan_out = gr.HTML(value="")
+    summarize_btn = gr.Button("SUMMARISE SCAN", variant="secondary")
+    summarize_out = gr.Markdown(value="")
 
     # ── Footer ────────────────────────────────────────────────────────────────
     gr.HTML(
@@ -573,7 +647,7 @@ with gr.Blocks(title="AlphaPulse") as demo:
 
     # ── Wiring ────────────────────────────────────────────────────────────────
     _wl_outs = [watchlist_state, remove_cg]
-    _analyze_outs = [result_out_5d, result_out_14d] + _wl_outs
+    _analyze_outs = [result_out_5d, result_out_14d, last_result_state] + _wl_outs
 
     analyze_btn.click(
         fn=analyze,
@@ -608,7 +682,17 @@ with gr.Blocks(title="AlphaPulse") as demo:
     scan_btn.click(
         fn=scan_watchlist,
         inputs=[watchlist_state],
-        outputs=[scan_out],
+        outputs=[scan_out, scan_results_state],
+    )
+    explain_btn.click(
+        fn=_explain_signal_action,
+        inputs=[last_result_state],
+        outputs=[explain_out],
+    )
+    summarize_btn.click(
+        fn=_summarize_scan_action,
+        inputs=[scan_results_state],
+        outputs=[summarize_out],
     )
 
 

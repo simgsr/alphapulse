@@ -3,7 +3,7 @@ import os
 import pandas as pd
 from unittest.mock import patch
 import pytest
-from train_model import binarize_return, load_tickers, FEATURE_NAMES as _NEW_FEATURES
+from train_model import binarize_return, load_tickers, FEATURE_NAMES as _NEW_FEATURES, ALL_FEATURE_NAMES
 
 
 class TestBinarizeReturn:
@@ -143,13 +143,14 @@ class TestBuildTickerDataset:
 
 
 class TestBuildFullDataset:
-    def _make_labeled_df(self, n_rows: int, start: str) -> pd.DataFrame:
+    def _make_labeled_df(self, n_rows: int, start: str, exchange: str = 'HK') -> pd.DataFrame:
         """Minimal labeled DataFrame as returned by build_ticker_dataset."""
         idx = pd.date_range(start, periods=n_rows, freq="B")
-        data = {f: np.ones(n_rows) for f in _NEW_FEATURES}
+        data = {f: np.random.rand(n_rows) for f in _NEW_FEATURES}
         data['Adj_Close'] = np.ones(n_rows) * 100.0
         data['forward_return'] = np.zeros(n_rows)
         data['target'] = 0
+        data['exchange'] = exchange
         return pd.DataFrame(data, index=idx)
 
     def test_80_20_split_sizes(self, tmp_path):
@@ -165,7 +166,7 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", side_effect=mock_build):
             from train_model import build_full_dataset
-            (X_train, y_train), (X_test, y_test) = build_full_dataset(str(csv_file))
+            (X_train, y_train), (X_test, y_test), _ = build_full_dataset(str(csv_file))
 
         total = len(X_train) + len(X_test)
         assert abs(len(X_train) / total - 0.8) < 0.01
@@ -179,11 +180,10 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", return_value=df_a):
             from train_model import build_full_dataset
-            (X_train, y_train), (X_test, y_test) = build_full_dataset(str(csv_file))
+            (X_train, y_train), (X_test, y_test), _ = build_full_dataset(str(csv_file))
 
-        expected_features = _NEW_FEATURES
-        assert list(X_train.columns) == expected_features
-        assert list(X_test.columns) == expected_features
+        assert list(X_train.columns) == ALL_FEATURE_NAMES
+        assert list(X_test.columns) == ALL_FEATURE_NAMES
 
     def test_skips_none_tickers(self, tmp_path):
         csv_content = "0001.hk\n0002.hk\n"
@@ -197,7 +197,7 @@ class TestBuildFullDataset:
 
         with patch("train_model.build_ticker_dataset", side_effect=mock_build):
             from train_model import build_full_dataset
-            (X_train, y_train), _ = build_full_dataset(str(csv_file))
+            (X_train, y_train), _, _qt = build_full_dataset(str(csv_file))
 
         assert len(X_train) > 0
 
@@ -219,15 +219,32 @@ class TestBuildFullDataset:
         assert received_kwargs.get('horizon') == 5
         assert received_kwargs.get('up_thresh') == 0.03
 
+    def test_returns_quantile_table(self, tmp_path):
+        csv_file = tmp_path / "hkex.csv"
+        csv_file.write_text("0001.hk\n")
+
+        df_a = self._make_labeled_df(300, "2020-01-01", exchange='HK')
+
+        with patch("train_model.build_ticker_dataset", return_value=df_a):
+            from train_model import build_full_dataset
+            _, _, qt = build_full_dataset(str(csv_file))
+
+        assert isinstance(qt, dict)
+        assert 'ALL' in qt
+        assert 'HK' in qt
+        for feat in _NEW_FEATURES:
+            assert feat in qt['ALL']
+
 
 class TestBuildFullDatasetSGX:
-    def _make_labeled_df(self, n_rows: int, start: str) -> pd.DataFrame:
+    def _make_labeled_df(self, n_rows: int, start: str, exchange: str = 'HK') -> pd.DataFrame:
         from train_model import FEATURE_NAMES as _FEATS
         idx = pd.date_range(start, periods=n_rows, freq="B")
-        data = {f: np.ones(n_rows) for f in _FEATS}
+        data = {f: np.random.rand(n_rows) for f in _FEATS}
         data['Adj_Close'] = np.ones(n_rows) * 100.0
         data['forward_return'] = np.zeros(n_rows)
         data['target'] = 0
+        data['exchange'] = exchange
         return pd.DataFrame(data, index=idx)
 
     def test_extra_csv_merges_tickers(self, tmp_path):
@@ -236,8 +253,8 @@ class TestBuildFullDatasetSGX:
         sg_csv = tmp_path / "sgx_tickers.csv"
         sg_csv.write_text("D05.SI\n")
 
-        df_a = self._make_labeled_df(300, "2020-01-01")
-        df_b = self._make_labeled_df(300, "2020-06-01")
+        df_a = self._make_labeled_df(300, "2020-01-01", exchange='HK')
+        df_b = self._make_labeled_df(300, "2020-06-01", exchange='SGX')
         call_log = []
 
         def mock_build(ticker, period='5y', **kwargs):
@@ -259,7 +276,7 @@ class TestBuildFullDatasetSGX:
 
         with patch("train_model.build_ticker_dataset", return_value=df_a):
             from train_model import build_full_dataset
-            (X_train, _), _ = build_full_dataset(str(hk_csv))
+            (X_train, _), _, _qt = build_full_dataset(str(hk_csv))
 
         assert len(X_train) > 0
 
