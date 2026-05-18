@@ -11,10 +11,11 @@ from sklearn.metrics import (
 )
 from lightgbm import (
     LGBMClassifier,
+    LGBMRanker,
     early_stopping as lgb_early_stopping,
     log_evaluation as lgb_log_evaluation,
 )
-from get_price_data import fetch_latest_data, calculate_technical_indicators
+from get_price_data import fetch_latest_data, calculate_technical_indicators, fetch_regime_data
 
 FEATURE_NAMES = [
     'SMA_5_ratio', 'SMA_20_ratio', 'SMA_50_ratio',
@@ -32,7 +33,8 @@ FEATURE_NAMES = [
 ]
 
 RANK_FEATURE_NAMES = [f'{f}_rank' for f in FEATURE_NAMES]
-ALL_FEATURE_NAMES = FEATURE_NAMES + RANK_FEATURE_NAMES
+REGIME_FEATURE_NAMES = ['mkt_ret_20d', 'mkt_sma200_ratio', 'vix_level', 'vix_chg_5d']
+ALL_FEATURE_NAMES = FEATURE_NAMES + RANK_FEATURE_NAMES + REGIME_FEATURE_NAMES
 
 
 def _ticker_exchange(ticker: str) -> str:
@@ -112,6 +114,47 @@ def _build_quantile_table(train_df: pd.DataFrame) -> dict:
     return table
 
 
+def _add_regime_features(combined: pd.DataFrame, regime_data: dict) -> pd.DataFrame:
+    """Merge market regime features into the combined stock DataFrame by date + exchange."""
+    date_key = combined.index.normalize()
+    for feat in REGIME_FEATURE_NAMES:
+        combined[feat] = np.nan
+    for exch in combined['exchange'].unique():
+        df_reg = regime_data.get(exch) or regime_data.get('ALL')
+        if df_reg is None:
+            continue
+        mask = combined['exchange'] == exch
+        aligned = df_reg[REGIME_FEATURE_NAMES].reindex(date_key[mask], method='ffill')
+        for feat in REGIME_FEATURE_NAMES:
+            combined.loc[mask, feat] = aligned[feat].values
+    # Forward-fill any remaining gaps (exchange holidays, missing market data)
+    combined[REGIME_FEATURE_NAMES] = combined[REGIME_FEATURE_NAMES].ffill()
+    return combined
+
+
+def _group_sizes_by_date(index: pd.DatetimeIndex) -> np.ndarray:
+    """Count of samples per trading date, in sorted order, for LambdaRank group param."""
+    _, counts = np.unique(index.normalize(), return_counts=True)
+    return counts
+
+
+def _precision_at_k(
+    y_true: pd.Series, scores: np.ndarray, date_index: pd.DatetimeIndex, k: int = 10
+) -> float:
+    """Mean precision@K across all dates — the natural trading evaluation metric."""
+    dates = date_index.normalize()
+    results = []
+    for d in np.unique(dates):
+        mask = dates == d
+        y_d = y_true.values[mask]
+        s_d = scores[mask]
+        if y_d.sum() == 0 or len(y_d) < k:
+            continue
+        top_idx = np.argsort(s_d)[-k:]
+        results.append(float(y_d[top_idx].mean()))
+    return float(np.mean(results)) if results else 0.0
+
+
 def build_full_dataset(
     csv_path: str,
     horizon: int = 7,
@@ -152,6 +195,15 @@ def build_full_dataset(
     print(f"\nUsed {len(frames)} tickers, skipped {skipped}")
     combined = pd.concat(frames).sort_index()
 
+    print("Fetching market regime data (SPY, ^VIX, ^HSI, ^STI)...", flush=True)
+    regime_data = fetch_regime_data(period='5y')
+    combined = _add_regime_features(combined, regime_data)
+    before = len(combined)
+    combined = combined.dropna(subset=REGIME_FEATURE_NAMES)
+    dropped = before - len(combined)
+    if dropped:
+        print(f"  Dropped {dropped:,} rows with missing regime data (early history).")
+
     print("\nClass distribution (full dataset):")
     print(combined['target'].value_counts().sort_index().to_string())
 
@@ -171,12 +223,13 @@ def build_full_dataset(
     return (X.iloc[:split], y.iloc[:split]), (X.iloc[split:], y.iloc[split:]), quantile_table, used_tickers
 
 
-def build_pipeline() -> Pipeline:
+def build_pipeline(scale_pos_weight: float = 1.0) -> Pipeline:
     """Build the unfitted sklearn Pipeline.
 
     RobustScaler is resistant to HK small-cap outliers.
-    is_unbalance=True resamples rather than reweights, producing better-calibrated
-    probabilities than scale_pos_weight (which compresses outputs near the base rate).
+    scale_pos_weight=n_neg/n_pos reweights the loss without resampling, which
+    tends to spread the probability distribution wider than is_unbalance=True.
+    Pass scale_pos_weight=1.0 (default) to disable class weighting.
     """
     return Pipeline([
         ('scaler', RobustScaler()),
@@ -184,13 +237,34 @@ def build_pipeline() -> Pipeline:
             n_estimators=1000,
             num_leaves=95,
             learning_rate=0.05,
-            is_unbalance=True,
+            scale_pos_weight=scale_pos_weight,
             min_child_samples=20,
             n_jobs=2,
             random_state=42,
             verbose=-1,
         ))
     ])
+
+
+def build_ranker() -> tuple:
+    """Return (scaler, ranker) for the LambdaRank training path.
+
+    LambdaRank optimises NDCG@10, directly targeting the top-K trading use case.
+    Scale_pos_weight is irrelevant here — label_gain handles class imbalance.
+    """
+    scaler = RobustScaler()
+    ranker = LGBMRanker(
+        objective='lambdarank',
+        lambdarank_truncation_level=10,
+        n_estimators=1000,
+        num_leaves=95,
+        learning_rate=0.05,
+        min_child_samples=20,
+        n_jobs=2,
+        random_state=42,
+        verbose=-1,
+    )
+    return scaler, ranker
 
 
 def find_ticker_csv(data_dir: str) -> str:
@@ -209,6 +283,7 @@ def train_and_save(
     output_path: str = 'stock_model.joblib',
     extra_csv_paths: list = None,
     optuna_tune: bool = False,
+    use_ranking: bool = False,
     save_tickers: bool = True,
     raw_cache: Optional[dict] = None,
     min_price: float = 1.0,
@@ -221,7 +296,8 @@ def train_and_save(
     print(f"Clip range    : ±{clip*100:.0f}%")
     print(f"Min price     : {min_price}")
     print(f"Min avg vol   : {min_avg_volume:,}")
-    print(f"Output path   : {output_path}\n")
+    print(f"Output path   : {output_path}")
+    print(f"Model type    : {'LambdaRank' if use_ranking else 'Classifier'}\n")
 
     (X_train, y_train), (X_test, y_test), quantile_table, used_tickers = build_full_dataset(
         csv_path,
@@ -238,113 +314,164 @@ def train_and_save(
     print("\nClass distribution (train set):")
     print(y_train.value_counts().sort_index().to_string())
 
-    if optuna_tune:
-        import optuna
-        from sklearn.model_selection import train_test_split
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
-        print("Running Optuna hyperparameter search (50 trials)...")
-        X_sub, _, y_sub, _ = train_test_split(
-            X_train, y_train, train_size=0.55, stratify=y_train, random_state=42
-        )
-        X_tv, X_val, y_tv, y_val = train_test_split(
-            X_sub, y_sub, test_size=0.2, stratify=y_sub, random_state=42
-        )
+    n_neg = int((y_train == 0).sum())
+    n_pos = int((y_train == 1).sum())
+    spw = n_neg / n_pos if n_pos > 0 else 1.0
+    print(f"scale_pos_weight : {spw:.3f}  (n_neg={n_neg:,}  n_pos={n_pos:,})")
 
-        def objective(trial):
-            params = {
-                'num_leaves': trial.suggest_int('num_leaves', 50, 300),
-                'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.20, log=True),
-                'n_estimators': trial.suggest_int('n_estimators', 200, 1000),
-                'min_child_samples': trial.suggest_int('min_child_samples', 10, 100),
-                'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-                'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 5.0),
-                'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 5.0),
-            }
-            _sc = RobustScaler()
-            X_tv_sc = np.asarray(_sc.fit_transform(X_tv))
-            X_val_sc = np.asarray(_sc.transform(X_val))
-            _clf = LGBMClassifier(
-                is_unbalance=True, n_jobs=2, random_state=42, verbose=-1, **params,
-            )
-            _clf.fit(
-                X_tv_sc, y_tv,
-                eval_set=[(X_val_sc, y_val)],
-                eval_metric='average_precision',
-                callbacks=[lgb_early_stopping(100, verbose=False)],
-            )
-            y_proba_val = _clf.predict_proba(X_val_sc)[:, 1]
-            return average_precision_score(y_val, y_proba_val)
-
-        study = optuna.create_study(direction='maximize')
-        study.optimize(objective, n_trials=50)
-        print(f"Best Optuna params : {study.best_params}")
-        print(f"Best AUC-PR        : {study.best_value:.4f}")
-        pipeline = Pipeline([
-            ('scaler', RobustScaler()),
-            ('clf', LGBMClassifier(
-                is_unbalance=True, n_jobs=2, random_state=42, verbose=-1,
-                **study.best_params,
-            ))
-        ])
-    else:
-        pipeline = build_pipeline()
-
-    print("Fitting pipeline with early stopping — this may take a few minutes...")
     _val_n = max(int(len(X_train) * 0.15), 500)
     X_tr_es = X_train.iloc[:-_val_n]
     X_val_es = X_train.iloc[-_val_n:]
     y_tr_es = y_train.iloc[:-_val_n]
     y_val_es = y_train.iloc[-_val_n:]
-    _scaler = pipeline.named_steps['scaler']
-    _clf = pipeline.named_steps['clf']
-    X_tr_sc = np.asarray(_scaler.fit_transform(X_tr_es))
-    X_val_sc = np.asarray(_scaler.transform(X_val_es))
-    _clf.fit(
-        X_tr_sc, y_tr_es,
-        eval_set=[(X_val_sc, y_val_es)],
-        eval_metric='average_precision',
-        callbacks=[lgb_early_stopping(100, verbose=False), lgb_log_evaluation(100)],
-    )
-    print(f"Best iteration: {_clf.best_iteration_}  (max: {_clf.get_params()['n_estimators']})")
-    print("Fitting complete.")
 
-    y_pred = pipeline.predict(X_test)
-    y_proba = pipeline.predict_proba(X_test)
+    if use_ranking:
+        # ── LambdaRank path ────────────────────────────────────────────────
+        print("Fitting LambdaRank model with early stopping...")
+        _scaler, _ranker = build_ranker()
+        X_tr_sc = np.asarray(_scaler.fit_transform(X_tr_es))
+        X_val_sc = np.asarray(_scaler.transform(X_val_es))
+        groups_tr = _group_sizes_by_date(X_tr_es.index)
+        groups_val = _group_sizes_by_date(X_val_es.index)
+        _ranker.fit(
+            X_tr_sc, y_tr_es,
+            group=groups_tr,
+            eval_set=[(X_val_sc, y_val_es)],
+            eval_group=[groups_val],
+            eval_metric='ndcg',
+            callbacks=[lgb_early_stopping(50, verbose=False), lgb_log_evaluation(100)],
+        )
+        print(f"Best iteration: {_ranker.best_iteration_}  (max: {_ranker.get_params()['n_estimators']})")
+        print("Fitting complete.")
 
-    print("\n=== Held-out Test Set Evaluation ===")
-    label_names = ["NOT-UP", f"UP>{up_thresh*100:.0f}%"]
-    print(classification_report(y_test, y_pred, target_names=label_names))
-    print(f"Accuracy : {accuracy_score(y_test, y_pred):.4f}")
-    print(f"Log-loss : {log_loss(y_test, y_proba):.4f}")
+        X_test_sc = np.asarray(_scaler.transform(X_test))
+        scores = _ranker.predict(X_test_sc)
 
-    classes_list = list(pipeline.classes_)
-    up_idx = classes_list.index(1)
-    y_proba_up = y_proba[:, up_idx]
-    y_test_bin = y_test  # already binary
-    thresholds = np.arange(0.50, 0.81, 0.05)
-    print(f"\n=== UP class Precision / Recall sweep ===")
-    print(f"{'Threshold':>10} {'Precision':>10} {'Recall':>10} {'Signals':>10}")
-    for t in thresholds:
-        y_pred_t = (y_proba_up >= t).astype(int)
-        n_sig = int(y_pred_t.sum())
-        prec = precision_score(y_test_bin, y_pred_t, zero_division=0)
-        rec = recall_score(y_test_bin, y_pred_t, zero_division=0)
-        print(f"{t:>10.2f} {prec:>10.4f} {rec:>10.4f} {n_sig:>10}")
+        print("\n=== Held-out Test Set Evaluation (LambdaRank) ===")
+        base_rate = float(y_test.mean())
+        print(f"UP base rate  : {base_rate:.3f}  (random precision@K baseline)")
+        for k in [5, 10, 20, 50]:
+            p_at_k = _precision_at_k(y_test, scores, X_test.index, k=k)
+            print(f"Precision@{k:<3} : {p_at_k:.4f}  (lift: {p_at_k/base_rate:.2f}x)")
 
-    model_data = {
-        'model': pipeline,
-        'features': ALL_FEATURE_NAMES,
-        'quantile_table': quantile_table,
-        'horizon': horizon,
-        'up_thresh': up_thresh,
-        'binary': True,
-        'description': (
-            f'Binary stock predictor. '
-            f'Classes: 0=NOT-UP, 1=UP>{up_thresh*100:.0f}%. '
-            f'Horizon: {horizon} trading days.'
-        ),
-    }
+        model_data = {
+            'model_type': 'ranker',
+            'scaler': _scaler,
+            'ranker': _ranker,
+            'features': ALL_FEATURE_NAMES,
+            'quantile_table': quantile_table,
+            'horizon': horizon,
+            'up_thresh': up_thresh,
+            'description': (
+                f'LambdaRank stock ranker. '
+                f'Target: UP>{up_thresh*100:.0f}% in {horizon} trading days.'
+            ),
+        }
+
+    else:
+        # ── Classifier path ────────────────────────────────────────────────
+        if optuna_tune:
+            import optuna
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            print("Running Optuna hyperparameter search (50 trials)...")
+            _n_sub = int(len(X_train) * 0.55)
+            X_sub = X_train.iloc[:_n_sub]
+            y_sub = y_train.iloc[:_n_sub]
+            _n_tv = int(len(X_sub) * 0.80)
+            X_tv, X_val = X_sub.iloc[:_n_tv], X_sub.iloc[_n_tv:]
+            y_tv, y_val = y_sub.iloc[:_n_tv], y_sub.iloc[_n_tv:]
+
+            def objective(trial):
+                params = {
+                    'num_leaves': trial.suggest_int('num_leaves', 50, 300),
+                    'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.20, log=True),
+                    'n_estimators': trial.suggest_int('n_estimators', 200, 1000),
+                    'min_child_samples': trial.suggest_int('min_child_samples', 10, 100),
+                    'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+                    'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+                    'reg_alpha': trial.suggest_float('reg_alpha', 0.0, 5.0),
+                    'reg_lambda': trial.suggest_float('reg_lambda', 0.0, 5.0),
+                }
+                _sc = RobustScaler()
+                X_tv_sc = np.asarray(_sc.fit_transform(X_tv))
+                X_val_sc = np.asarray(_sc.transform(X_val))
+                _clf = LGBMClassifier(
+                    scale_pos_weight=spw, n_jobs=2, random_state=42, verbose=-1, **params,
+                )
+                _clf.fit(
+                    X_tv_sc, y_tv,
+                    eval_set=[(X_val_sc, y_val)],
+                    eval_metric='average_precision',
+                    callbacks=[lgb_early_stopping(100, verbose=False)],
+                )
+                y_proba_val = _clf.predict_proba(X_val_sc)[:, 1]
+                return average_precision_score(y_val, y_proba_val)
+
+            study = optuna.create_study(direction='maximize')
+            study.optimize(objective, n_trials=50)
+            print(f"Best Optuna params : {study.best_params}")
+            print(f"Best AUC-PR        : {study.best_value:.4f}")
+            pipeline = Pipeline([
+                ('scaler', RobustScaler()),
+                ('clf', LGBMClassifier(
+                    scale_pos_weight=spw, n_jobs=2, random_state=42, verbose=-1,
+                    **study.best_params,
+                ))
+            ])
+        else:
+            pipeline = build_pipeline(scale_pos_weight=spw)
+
+        print("Fitting pipeline with early stopping — this may take a few minutes...")
+        _scaler = pipeline.named_steps['scaler']
+        _clf = pipeline.named_steps['clf']
+        X_tr_sc = np.asarray(_scaler.fit_transform(X_tr_es))
+        X_val_sc = np.asarray(_scaler.transform(X_val_es))
+        _clf.fit(
+            X_tr_sc, y_tr_es,
+            eval_set=[(X_val_sc, y_val_es)],
+            eval_metric='average_precision',
+            callbacks=[lgb_early_stopping(100, verbose=False), lgb_log_evaluation(100)],
+        )
+        print(f"Best iteration: {_clf.best_iteration_}  (max: {_clf.get_params()['n_estimators']})")
+        print("Fitting complete.")
+
+        y_pred = pipeline.predict(X_test)
+        y_proba = pipeline.predict_proba(X_test)
+
+        print("\n=== Held-out Test Set Evaluation ===")
+        label_names = ["NOT-UP", f"UP>{up_thresh*100:.0f}%"]
+        print(classification_report(y_test, y_pred, target_names=label_names))
+        print(f"Accuracy : {accuracy_score(y_test, y_pred):.4f}")
+        print(f"Log-loss : {log_loss(y_test, y_proba):.4f}")
+
+        classes_list = list(pipeline.classes_)
+        up_idx = classes_list.index(1)
+        y_proba_up = y_proba[:, up_idx]
+        thresholds = np.arange(0.50, 0.81, 0.05)
+        print(f"\n=== UP class Precision / Recall sweep ===")
+        print(f"{'Threshold':>10} {'Precision':>10} {'Recall':>10} {'Signals':>10}")
+        for t in thresholds:
+            y_pred_t = (y_proba_up >= t).astype(int)
+            n_sig = int(y_pred_t.sum())
+            prec = precision_score(y_test, y_pred_t, zero_division=0)
+            rec = recall_score(y_test, y_pred_t, zero_division=0)
+            print(f"{t:>10.2f} {prec:>10.4f} {rec:>10.4f} {n_sig:>10}")
+
+        model_data = {
+            'model_type': 'classifier',
+            'model': pipeline,
+            'features': ALL_FEATURE_NAMES,
+            'quantile_table': quantile_table,
+            'horizon': horizon,
+            'up_thresh': up_thresh,
+            'binary': True,
+            'description': (
+                f'Binary stock predictor. '
+                f'Classes: 0=NOT-UP, 1=UP>{up_thresh*100:.0f}%. '
+                f'Horizon: {horizon} trading days.'
+            ),
+        }
+
     joblib.dump(model_data, output_path)
     print(f"\nModel saved to: {output_path}")
 
@@ -366,6 +493,9 @@ def diagnose_saved_model(
     and checking whether features carry weight.
     """
     data = joblib.load(model_path)
+    if data.get('model_type') == 'ranker':
+        print("diagnose_saved_model does not support ranker models — use predict_upstock.py instead.")
+        return
     pipeline = data['model']
     horizon = data.get('horizon', 7)
     up_thresh = data.get('up_thresh', 0.03)
@@ -475,7 +605,7 @@ if __name__ == '__main__':
         output_path=os.path.join(_base_dir, 'stock_model_7d.joblib'),
         extra_csv_paths=_all_csvs[1:] or None,
         raw_cache=_raw_cache,
-        optuna_tune=True,
+        use_ranking=True,
     )
     train_and_save(
         _all_csvs[0],
@@ -485,6 +615,6 @@ if __name__ == '__main__':
         output_path=os.path.join(_base_dir, 'stock_model_14d.joblib'),
         extra_csv_paths=_all_csvs[1:] or None,
         raw_cache=_raw_cache,
-        optuna_tune=True,
+        use_ranking=True,
         save_tickers=False,
     )

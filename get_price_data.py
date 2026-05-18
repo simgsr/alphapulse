@@ -117,3 +117,49 @@ def calculate_technical_indicators(df):
     df['CMF_20'] = df['CMF_20'].fillna(0).clip(-1, 1)
 
     return df.dropna()
+
+
+def fetch_regime_data(period: str = '5y') -> dict:
+    """
+    Fetch market regime features keyed by exchange ('ALL', 'HK', 'SGX').
+
+    Columns in each returned DataFrame:
+        mkt_ret_20d      — 20-day return of the local market index
+        mkt_sma200_ratio — index / 200-day SMA − 1  (positive = bull regime)
+        vix_level        — CBOE VIX close (global risk-off proxy)
+        vix_chg_5d       — VIX 5-day percent change
+    """
+    MARKET_TICKERS = {'ALL': 'SPY', 'HK': '^HSI', 'SGX': '^STI'}
+
+    try:
+        vix_raw = yf.download('^VIX', period=period, interval='1d', progress=False)
+        if isinstance(vix_raw.columns, pd.MultiIndex):
+            vix_raw.columns = vix_raw.columns.get_level_values(0)
+        vix_close = vix_raw['Close'].squeeze()
+    except Exception:
+        vix_close = pd.Series(dtype=float, name='Close')
+
+    result: dict = {}
+    for exch, ticker in MARKET_TICKERS.items():
+        try:
+            raw = yf.download(ticker, period=period, interval='1d', progress=False)
+            if raw.empty:
+                continue
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.get_level_values(0)
+            close = raw['Close'].squeeze()
+            sma200 = close.rolling(200).mean()
+
+            df = pd.DataFrame(index=close.index)
+            df['mkt_ret_20d'] = close.pct_change(20)
+            df['mkt_sma200_ratio'] = close / sma200 - 1
+
+            vix_aligned = vix_close.reindex(df.index, method='ffill')
+            df['vix_level'] = vix_aligned
+            df['vix_chg_5d'] = vix_aligned.pct_change(5)
+
+            result[exch] = df.dropna()
+        except Exception as e:
+            print(f"Warning: regime data fetch failed for {exch} ({ticker}): {e}")
+
+    return result
