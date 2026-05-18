@@ -120,7 +120,9 @@ def _add_regime_features(combined: pd.DataFrame, regime_data: dict) -> pd.DataFr
     for feat in REGIME_FEATURE_NAMES:
         combined[feat] = np.nan
     for exch in combined['exchange'].unique():
-        df_reg = regime_data.get(exch) or regime_data.get('ALL')
+        df_reg = regime_data.get(exch)
+        if df_reg is None:
+            df_reg = regime_data.get('ALL')
         if df_reg is None:
             continue
         mask = combined['exchange'] == exch
@@ -249,16 +251,16 @@ def build_pipeline(scale_pos_weight: float = 1.0) -> Pipeline:
 def build_ranker() -> tuple:
     """Return (scaler, ranker) for the LambdaRank training path.
 
-    LambdaRank optimises NDCG@10, directly targeting the top-K trading use case.
+    LambdaRank optimises NDCG@5, directly targeting the top-K trading use case.
     Scale_pos_weight is irrelevant here — label_gain handles class imbalance.
     """
     scaler = RobustScaler()
     ranker = LGBMRanker(
         objective='lambdarank',
-        lambdarank_truncation_level=10,
+        lambdarank_truncation_level=5,
         n_estimators=1000,
         num_leaves=95,
-        learning_rate=0.05,
+        learning_rate=0.01,
         min_child_samples=20,
         n_jobs=2,
         random_state=42,
@@ -327,19 +329,48 @@ def train_and_save(
 
     if use_ranking:
         # ── LambdaRank path ────────────────────────────────────────────────
+
+        # Diagnostic: group size distribution (stocks per trading date)
+        _gs_tr_all = _group_sizes_by_date(X_tr_es.index)
+        print(f"\nGroup size diagnostics (train, before filter):")
+        print(f"  min={_gs_tr_all.min()}  median={int(np.median(_gs_tr_all))}  "
+              f"max={_gs_tr_all.max()}  total_groups={len(_gs_tr_all)}")
+        print(f"  Groups with <10 stocks: {((_gs_tr_all < 10).sum())} "
+              f"({100*(_gs_tr_all < 10).mean():.1f}%)")
+
+        # Filter out dates with fewer than 10 stocks — too noisy for NDCG
+        _min_group = 10
+        _date_key_tr = X_tr_es.index.normalize()
+        _date_counts_tr = _date_key_tr.value_counts()
+        _valid_dates_tr = _date_counts_tr[_date_counts_tr >= _min_group].index
+        _mask_tr = _date_key_tr.isin(_valid_dates_tr)
+        X_tr_es_f = X_tr_es[_mask_tr]
+        y_tr_es_f = y_tr_es[_mask_tr]
+
+        _date_key_val = X_val_es.index.normalize()
+        _date_counts_val = _date_key_val.value_counts()
+        _valid_dates_val = _date_counts_val[_date_counts_val >= _min_group].index
+        _mask_val = _date_key_val.isin(_valid_dates_val)
+        X_val_es_f = X_val_es[_mask_val]
+        y_val_es_f = y_val_es[_mask_val]
+
+        _gs_tr = _group_sizes_by_date(X_tr_es_f.index)
+        _gs_val = _group_sizes_by_date(X_val_es_f.index)
+        print(f"After filter  (>={_min_group} stocks/date): "
+              f"train groups={len(_gs_tr)}, val groups={len(_gs_val)}")
+        print(f"  train rows={len(X_tr_es_f):,}  val rows={len(X_val_es_f):,}\n")
+
         print("Fitting LambdaRank model with early stopping...")
         _scaler, _ranker = build_ranker()
-        X_tr_sc = np.asarray(_scaler.fit_transform(X_tr_es))
-        X_val_sc = np.asarray(_scaler.transform(X_val_es))
-        groups_tr = _group_sizes_by_date(X_tr_es.index)
-        groups_val = _group_sizes_by_date(X_val_es.index)
+        X_tr_sc = np.asarray(_scaler.fit_transform(X_tr_es_f))
+        X_val_sc = np.asarray(_scaler.transform(X_val_es_f))
         _ranker.fit(
-            X_tr_sc, y_tr_es,
-            group=groups_tr,
-            eval_set=[(X_val_sc, y_val_es)],
-            eval_group=[groups_val],
+            X_tr_sc, y_tr_es_f,
+            group=_gs_tr,
+            eval_set=[(X_val_sc, y_val_es_f)],
+            eval_group=[_gs_val],
             eval_metric='ndcg',
-            callbacks=[lgb_early_stopping(50, verbose=False), lgb_log_evaluation(100)],
+            callbacks=[lgb_early_stopping(150, verbose=False), lgb_log_evaluation(100)],
         )
         print(f"Best iteration: {_ranker.best_iteration_}  (max: {_ranker.get_params()['n_estimators']})")
         print("Fitting complete.")
@@ -456,6 +487,24 @@ def train_and_save(
             prec = precision_score(y_test, y_pred_t, zero_division=0)
             rec = recall_score(y_test, y_pred_t, zero_division=0)
             print(f"{t:>10.2f} {prec:>10.4f} {rec:>10.4f} {n_sig:>10}")
+
+        # Cross-sectional precision@K — same metric as ranker evaluation
+        print(f"\n=== Cross-sectional Precision@K (classifier scores) ===")
+        base_rate = float(y_test.mean())
+        print(f"UP base rate  : {base_rate:.3f}  (random precision@K baseline)")
+        for k in [5, 10, 20, 50]:
+            p_at_k = _precision_at_k(y_test, y_proba_up, X_test.index, k=k)
+            print(f"Precision@{k:<3} : {p_at_k:.4f}  (lift: {p_at_k/base_rate:.2f}x)")
+
+        # Feature importances
+        _clf_fitted = pipeline.named_steps['clf']
+        _imp = pd.Series(_clf_fitted.feature_importances_, index=ALL_FEATURE_NAMES).sort_values(ascending=False)
+        print(f"\n=== Top 20 Feature Importances ===")
+        print(_imp.head(20).to_string())
+        _rank_weight = _imp[RANK_FEATURE_NAMES].sum() / _imp.sum()
+        print(f"\nRank-feature share of total importance : {_rank_weight:.1%}")
+        _regime_weight = _imp[REGIME_FEATURE_NAMES].sum() / _imp.sum()
+        print(f"Regime-feature share of total importance: {_regime_weight:.1%}")
 
         model_data = {
             'model_type': 'classifier',
@@ -605,7 +654,7 @@ if __name__ == '__main__':
         output_path=os.path.join(_base_dir, 'stock_model_7d.joblib'),
         extra_csv_paths=_all_csvs[1:] or None,
         raw_cache=_raw_cache,
-        use_ranking=True,
+        use_ranking=False,
     )
     train_and_save(
         _all_csvs[0],
@@ -615,6 +664,6 @@ if __name__ == '__main__':
         output_path=os.path.join(_base_dir, 'stock_model_14d.joblib'),
         extra_csv_paths=_all_csvs[1:] or None,
         raw_cache=_raw_cache,
-        use_ranking=True,
+        use_ranking=False,
         save_tickers=False,
     )
